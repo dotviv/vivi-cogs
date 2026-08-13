@@ -1,0 +1,18 @@
+{
+    "author": ["vivinancy"],
+    "name": "Verification",
+    "install_msg": "Thank you for installing Verification!\nRun `[p]verifyset settings` to begin, then `[p]verifyset toggle` once configured.",
+    "short": "Protect your community from unwanted bots by enforcing verification for new members.",
+    "description": "Gate new members behind an image captcha in a dedicated channel, with configurable roles to add and remove on success.",
+    "tags": [
+        "security",
+        "spam",
+        "raid",
+        "protection",
+        "captcha"
+    ],
+    "requirements": ["pillow"],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "end_user_data_statement": "This cog temporarily stores the Discord user ID, a generated verification code, an attempt count, and an expiry timestamp for members currently undergoing verification. This data is deleted when verification completes, expires, or the member leaves the server."
+}
