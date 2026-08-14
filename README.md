@@ -68,9 +68,14 @@ clicking Verify again. At zero attempts they are locked out until a moderator ru
 `[p]verify reset @member`.
 
 `[p]verifyset onfail kick` additionally requires **Kick Members**. The default is
-`none`: a member who fails stays unverified and waits for a reset. Note that the
-failure action only reaches people who *started* verifying — someone who joins and
-never presses the button has no timer running.
+`none`: a member who runs out of attempts stays unverified and waits for a reset.
+
+**Running out of time never kicks and never costs an attempt.** If someone presses
+Verify and then walks away, the captcha is simply discarded and they can start over.
+Only submitting wrong codes until no attempts remain triggers `onfail`.
+
+That leaves one deliberate gap: a member who joins and never presses Verify is never
+actioned at all. They keep the join role and no access until you remove them yourself.
 
 ## License
 

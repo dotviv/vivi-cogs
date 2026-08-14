@@ -28,7 +28,7 @@ class Verification(commands.Cog):
     """Require new members to solve an image captcha before they are let in."""
 
     __author__ = "vivinancy"
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
 
     DEFAULT_GUILD = {
         "enabled": False,
@@ -186,7 +186,12 @@ class Verification(commands.Cog):
         )
 
     async def _lock_out(self, member: discord.Member, conf: dict, reason: str) -> None:
-        """Attempts exhausted: block further tries until a mod resets them."""
+        """Attempts exhausted: block further tries until a mod resets them.
+
+        This is the only path that can remove a member. The kick is deliberately
+        inlined here rather than shared with :meth:`_expire`, so that running out
+        of time can never reach it -- that mistake has already been made once.
+        """
         await self.config.member(member).set(
             {"code": None, "attempts": 0, "expires_at": None, "locked_out": True}
         )
@@ -196,23 +201,6 @@ class Verification(commands.Cog):
             description=f"{member.mention} {reason}.",
             colour=LOCKOUT_COLOUR,
         )
-        await self._apply_failure_action(member, conf, reason)
-
-    async def _expire(self, member: discord.Member, conf: dict) -> None:
-        """Timed out mid-flow. Attempts are preserved -- they can start over."""
-        await self.config.member(member).code.set(None)
-        await self.config.member(member).expires_at.set(None)
-        await self._modlog(
-            member,
-            title="Verification expired",
-            description=f"{member.mention} did not finish in time.",
-            colour=FAIL_COLOUR,
-        )
-        await self._apply_failure_action(member, conf, "did not verify in time")
-
-    async def _apply_failure_action(
-        self, member: discord.Member, conf: dict, reason: str
-    ) -> None:
         if conf["on_failure"] != "kick":
             return
         try:
@@ -224,6 +212,24 @@ class Verification(commands.Cog):
             )
         except discord.HTTPException as error:
             log.warning("Failed to kick %s: %s", member.id, error)
+
+    async def _expire(self, member: discord.Member) -> None:
+        """Ran out of time mid-flow.
+
+        Costs the member nothing: attempts are preserved and no failure action
+        is applied. Someone who pressed Verify and then got distracted has shown
+        more good faith than someone who never pressed it at all, and the latter
+        is never penalised either. Takes no ``conf`` precisely so it has no way
+        to consult ``on_failure``.
+        """
+        await self.config.member(member).code.set(None)
+        await self.config.member(member).expires_at.set(None)
+        await self._modlog(
+            member,
+            title="Verification expired",
+            description=f"{member.mention} did not finish in time. No action taken.",
+            colour=FAIL_COLOUR,
+        )
 
     # ------------------------------------------------------------------
     # Interaction handling
@@ -283,7 +289,7 @@ class Verification(commands.Cog):
             return
 
         if state["expires_at"] and state["expires_at"] < datetime.now(timezone.utc).timestamp():
-            await self._expire(member, conf)
+            await self._expire(member)
             await interaction.response.send_message(
                 "That captcha expired. Press **Verify** again for a new one.", ephemeral=True
             )
@@ -338,7 +344,7 @@ class Verification(commands.Cog):
         )
 
         description = (
-            f"Type the **{conf['code_length']} characters** shown below, then press "
+            f"Memorize the **{conf['code_length']} characters** shown below, then press "
             "**Enter Code**.\nLetters are not case-sensitive."
         )
         embed = discord.Embed(
@@ -386,7 +392,6 @@ class Verification(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue
-            conf = await self.config.guild(guild).all()
             for member_id, state in members.items():
                 # Only people who actually started and stalled mid-flow.
                 if not state.get("code") or not state.get("expires_at"):
@@ -397,7 +402,7 @@ class Verification(commands.Cog):
                 if member is None:
                     await self.config.member_from_ids(guild_id, member_id).clear()
                     continue
-                await self._expire(member, conf)
+                await self._expire(member)
 
     @_sweep_expired.before_loop
     async def _before_sweep(self) -> None:
@@ -610,7 +615,7 @@ class Verification(commands.Cog):
 
     @verifyset.command(name="onfail")
     async def verifyset_onfail(self, ctx: commands.Context, action: str) -> None:
-        """What to do when someone fails or times out: `none` or `kick`."""
+        """What to do when someone uses up every attempt: `none` or `kick`."""
         action = action.lower()
         if action not in FAILURE_ACTIONS:
             await ctx.send(f"Choose one of: {humanize_list(list(FAILURE_ACTIONS))}.")
@@ -621,12 +626,16 @@ class Verification(commands.Cog):
         await self.config.guild(ctx.guild).on_failure.set(action)
         if action == "kick":
             await ctx.send(
-                "Members who fail or time out will now be kicked. Note this only "
-                "applies to people who actually start verifying — someone who "
-                "joins and never presses the button is never kicked."
+                "Members will now be kicked once they use up every attempt.\n\n"
+                "Running out of **time** does not kick — only submitting wrong codes "
+                "until no attempts remain does. A member who walks away mid-captcha "
+                "keeps their attempts and can start over."
             )
         else:
-            await ctx.send("Members who fail will stay unverified and can be reset by a mod.")
+            await ctx.send(
+                "Members who run out of attempts will stay unverified until a mod "
+                f"runs `{ctx.clean_prefix}verify reset`."
+            )
 
     @verifyset.command(name="toggle")
     async def verifyset_toggle(self, ctx: commands.Context) -> None:
