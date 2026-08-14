@@ -1,6 +1,6 @@
 # vivi-cogs
 
-Cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3.
+Cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3, by **dotviv**.
 
 ## Installation
 
@@ -8,10 +8,12 @@ Replace `[p]` with your bot's prefix.
 
 ```
 [p]load downloader
-[p]repo add vivi-cogs <repo-url>
+[p]repo add vivi-cogs https://github.com/dotviv/vivi-cogs
 [p]cog install vivi-cogs verification
 [p]load verification
 ```
+
+Requires Red 3.5.0 or newer. Dependencies (Pillow) are installed automatically.
 
 ## Cogs
 
@@ -45,6 +47,10 @@ Use `[p]verifyset test` to send yourself a captcha without touching any roles.
 
 Nothing is ever posted publicly, so no one can read anyone else's code.
 
+Note that Discord's popup form covers the screen, so the captcha is not visible while
+someone is typing — they have to memorize it. If six characters proves awkward for
+your members, `[p]verifyset length 4` shortens it.
+
 ### Channel permissions
 
 Because the whole exchange is private, the verification channel needs no public
@@ -76,6 +82,34 @@ Only submitting wrong codes until no attempts remain triggers `onfail`.
 
 That leaves one deliberate gap: a member who joins and never presses Verify is never
 actioned at all. They keep the join role and no access until you remove them yourself.
+
+## Command reference
+
+### Setup — `[p]verifyset` (requires Manage Server)
+
+| Command | Description |
+| --- | --- |
+| `channel <channel>` | Set the channel the panel lives in |
+| `panel` | Post the Verify panel, or refresh an existing one in place |
+| `joinrole add\|remove <role>` | Roles applied the moment someone joins |
+| `addrole add\|remove <role>` | Roles granted once verification succeeds |
+| `removerole add\|remove <role>` | Roles stripped once verification succeeds |
+| `modlog [channel]` | Log outcomes to a channel; omit the channel to disable |
+| `attempts <1-10>` | Tries allowed before lockout |
+| `timeout <60-900>` | Seconds a captcha stays valid |
+| `length <4-10>` | Characters in the code |
+| `onfail <none\|kick>` | What happens when someone uses up every attempt |
+| `toggle` | Enable or disable verification |
+| `settings` | Show the current configuration |
+| `test` | Preview a captcha; changes no roles and records no state |
+
+### Moderation — `[p]verify` (requires Manage Roles)
+
+| Command | Description |
+| --- | --- |
+| `approve <member>` | Pass a member through without solving the captcha |
+| `reject <member>` | Lock a member out and apply the failure action |
+| `reset <member>` | Clear a lockout so a member can try again |
 
 ## License
 

@@ -27,7 +27,7 @@ LOCKOUT_COLOUR = discord.Colour.red()
 class Verification(commands.Cog):
     """Require new members to solve an image captcha before they are let in."""
 
-    __author__ = "vivinancy"
+    __author__ = "dotviv"
     __version__ = "1.2.0"
 
     DEFAULT_GUILD = {

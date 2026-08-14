@@ -1,5 +1,5 @@
 {
-    "author": ["vivinancy"],
+    "author": ["dotviv"],
     "name": "Verification",
     "install_msg": "Thank you for installing Verification!\nRun `[p]verifyset settings` to begin, then `[p]verifyset toggle` once configured.",
     "short": "Protect your community from unwanted bots by enforcing verification for new members.",
