@@ -1,4 +1,4 @@
-"""Gate new members behind an image captcha in a dedicated channel."""
+"""Gate new members behind an image captcha, entered through a button panel."""
 
 from __future__ import annotations
 
@@ -13,21 +13,28 @@ from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import humanize_list
 
 from . import captcha
+from .views import CaptchaPrompt, VerificationPanel
 
 log = logging.getLogger("red.vivi-cogs.verification")
 
 FAILURE_ACTIONS = ("none", "kick")
+
+PASS_COLOUR = discord.Colour.green()
+FAIL_COLOUR = discord.Colour.orange()
+LOCKOUT_COLOUR = discord.Colour.red()
 
 
 class Verification(commands.Cog):
     """Require new members to solve an image captcha before they are let in."""
 
     __author__ = "vivinancy"
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     DEFAULT_GUILD = {
         "enabled": False,
         "channel_id": None,
+        "panel_message_id": None,
+        "modlog_channel_id": None,
         "join_roles": [],
         "add_roles": [],
         "remove_roles": [],
@@ -35,14 +42,13 @@ class Verification(commands.Cog):
         "max_attempts": 3,
         "timeout": 600,
         "on_failure": "none",
-        "delete_messages": True,
     }
 
     DEFAULT_MEMBER = {
         "code": None,
         "attempts": 0,
         "expires_at": None,
-        "message_id": None,
+        "locked_out": False,
     }
 
     def __init__(self, bot: Red) -> None:
@@ -52,6 +58,12 @@ class Verification(commands.Cog):
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
         self._sweep_expired.start()
+
+    async def cog_load(self) -> None:
+        # Re-registers the panel button so it keeps working after a restart.
+        # Handlers are keyed by custom_id, so a cog reload overwrites rather
+        # than stacking duplicates.
+        self.bot.add_view(VerificationPanel(self))
 
     def cog_unload(self) -> None:
         self._sweep_expired.cancel()
@@ -112,69 +124,51 @@ class Verification(commands.Cog):
         except discord.HTTPException as error:
             log.warning("Failed to update roles for %s: %s", member.id, error)
 
+    @staticmethod
+    def _already_verified(member: discord.Member, conf: dict) -> bool:
+        held = {role.id for role in member.roles}
+        if conf["add_roles"]:
+            return all(role_id in held for role_id in conf["add_roles"])
+        # Guilds that only strip an "Unverified" role have no grant list, so
+        # the absence of every removal role is what marks them as done.
+        if conf["remove_roles"]:
+            return not any(role_id in held for role_id in conf["remove_roles"])
+        return False
+
     # ------------------------------------------------------------------
-    # Verification flow
+    # Mod log
     # ------------------------------------------------------------------
 
-    async def _issue_captcha(
+    async def _modlog(
         self,
         member: discord.Member,
-        channel: discord.TextChannel,
-        conf: dict,
         *,
-        attempts: Optional[int] = None,
+        title: str,
+        description: str,
+        colour: discord.Colour,
     ) -> None:
-        """Generate a fresh code, persist it, and post the image."""
-        code = captcha.generate_code(conf["code_length"])
-        expires_at = datetime.now(timezone.utc).timestamp() + conf["timeout"]
-
-        await self._delete_previous_prompt(member, channel)
-
+        """Post a verification event to the mod-log channel, if one is set."""
+        channel_id = await self.config.guild(member.guild).modlog_channel_id()
+        if not channel_id:
+            return
+        channel = member.guild.get_channel(channel_id)
+        if channel is None:
+            return
         embed = discord.Embed(
-            title="Verification required",
-            description=(
-                f"Welcome to **{member.guild.name}**!\n\n"
-                f"Type the **{conf['code_length']} characters** shown below to gain access.\n"
-                f"Letters are not case-sensitive."
-            ),
-            colour=discord.Colour.blurple(),
+            title=title,
+            description=description,
+            colour=colour,
+            timestamp=discord.utils.utcnow(),
         )
-        embed.set_image(url="attachment://captcha.png")
-        remaining = conf["max_attempts"] if attempts is None else attempts
-        embed.set_footer(text=f"{remaining} attempt(s) remaining")
-
+        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
         try:
-            message = await channel.send(
-                content=member.mention,
-                embed=embed,
-                file=discord.File(captcha.render(code), filename="captcha.png"),
-            )
-        except discord.Forbidden:
-            log.warning(
-                "Cannot post in verification channel %s of guild %s.", channel.id, member.guild.id
-            )
-            return
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Could not write to the mod-log channel in guild %s.", member.guild.id)
 
-        await self.config.member(member).set(
-            {
-                "code": code,
-                "attempts": remaining,
-                "expires_at": expires_at,
-                "message_id": message.id,
-            }
-        )
-
-    async def _delete_previous_prompt(
-        self, member: discord.Member, channel: discord.abc.Messageable
-    ) -> None:
-        message_id = await self.config.member(member).message_id()
-        if not message_id:
-            return
-        try:
-            message = await channel.fetch_message(message_id)
-            await message.delete()
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
+    # ------------------------------------------------------------------
+    # Outcomes
+    # ------------------------------------------------------------------
 
     async def _succeed(self, member: discord.Member, conf: dict) -> None:
         await self._apply_roles(
@@ -184,9 +178,41 @@ class Verification(commands.Cog):
             reason="Verification: captcha solved",
         )
         await self.config.member(member).clear()
+        await self._modlog(
+            member,
+            title="Verification passed",
+            description=f"{member.mention} solved the captcha.",
+            colour=PASS_COLOUR,
+        )
 
-    async def _fail(self, member: discord.Member, conf: dict, reason: str) -> None:
-        await self.config.member(member).clear()
+    async def _lock_out(self, member: discord.Member, conf: dict, reason: str) -> None:
+        """Attempts exhausted: block further tries until a mod resets them."""
+        await self.config.member(member).set(
+            {"code": None, "attempts": 0, "expires_at": None, "locked_out": True}
+        )
+        await self._modlog(
+            member,
+            title="Verification locked out",
+            description=f"{member.mention} {reason}.",
+            colour=LOCKOUT_COLOUR,
+        )
+        await self._apply_failure_action(member, conf, reason)
+
+    async def _expire(self, member: discord.Member, conf: dict) -> None:
+        """Timed out mid-flow. Attempts are preserved -- they can start over."""
+        await self.config.member(member).code.set(None)
+        await self.config.member(member).expires_at.set(None)
+        await self._modlog(
+            member,
+            title="Verification expired",
+            description=f"{member.mention} did not finish in time.",
+            colour=FAIL_COLOUR,
+        )
+        await self._apply_failure_action(member, conf, "did not verify in time")
+
+    async def _apply_failure_action(
+        self, member: discord.Member, conf: dict, reason: str
+    ) -> None:
         if conf["on_failure"] != "kick":
             return
         try:
@@ -200,6 +226,137 @@ class Verification(commands.Cog):
             log.warning("Failed to kick %s: %s", member.id, error)
 
     # ------------------------------------------------------------------
+    # Interaction handling
+    # ------------------------------------------------------------------
+
+    async def handle_panel_click(self, interaction: discord.Interaction) -> None:
+        """Someone pressed Verify on the panel."""
+        member = interaction.user
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            return
+
+        conf = await self.config.guild(interaction.guild).all()
+        if not conf["enabled"]:
+            await interaction.response.send_message(
+                "Verification isn't enabled here right now.", ephemeral=True
+            )
+            return
+
+        if self._already_verified(member, conf):
+            await interaction.response.send_message(
+                "You're already verified — nothing to do here.", ephemeral=True
+            )
+            return
+
+        state = await self.config.member(member).all()
+        if state["locked_out"]:
+            await interaction.response.send_message(
+                "You've used all of your attempts. Please contact a moderator for help.",
+                ephemeral=True,
+            )
+            return
+
+        # Only refill the attempt budget when nothing is already in flight --
+        # otherwise clicking Verify again would hand out a fresh set of tries
+        # and the attempt limit would mean nothing.
+        attempts = state["attempts"] if state["code"] else conf["max_attempts"]
+        await self._send_captcha(interaction, member, conf, attempts)
+
+    async def handle_code_submit(
+        self, interaction: discord.Interaction, issued_code: str, submitted: str
+    ) -> None:
+        """Someone submitted the modal."""
+        member = interaction.user
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            return
+
+        conf = await self.config.guild(interaction.guild).all()
+        state = await self.config.member(member).all()
+
+        # A newer captcha was issued after this prompt was opened. Reject it
+        # without decrementing -- the member didn't cause this race.
+        if not state["code"] or state["code"] != issued_code:
+            await interaction.response.send_message(
+                "That captcha is no longer valid. Press **Verify** again for a new one.",
+                ephemeral=True,
+            )
+            return
+
+        if state["expires_at"] and state["expires_at"] < datetime.now(timezone.utc).timestamp():
+            await self._expire(member, conf)
+            await interaction.response.send_message(
+                "That captcha expired. Press **Verify** again for a new one.", ephemeral=True
+            )
+            return
+
+        if submitted.strip().upper() == state["code"].upper():
+            await self._succeed(member, conf)
+            await interaction.response.send_message(
+                f"Verified — welcome to **{interaction.guild.name}**!", ephemeral=True
+            )
+            return
+
+        remaining = state["attempts"] - 1
+        if remaining <= 0:
+            await self._lock_out(member, conf, "ran out of attempts")
+            await interaction.response.send_message(
+                "That was incorrect, and it was your last attempt. "
+                "Please contact a moderator for help.",
+                ephemeral=True,
+            )
+            return
+
+        await self._modlog(
+            member,
+            title="Verification attempt failed",
+            description=f"{member.mention} submitted an incorrect code. {remaining} left.",
+            colour=FAIL_COLOUR,
+        )
+        # Burn the failed code and issue a fresh one.
+        await self._send_captcha(
+            interaction, member, conf, remaining, note="That code was incorrect."
+        )
+
+    async def _send_captcha(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        conf: dict,
+        attempts: int,
+        *,
+        note: Optional[str] = None,
+    ) -> None:
+        """Generate a code, persist it, and reply with the image, privately."""
+        code = captcha.generate_code(conf["code_length"])
+        await self.config.member(member).set(
+            {
+                "code": code,
+                "attempts": attempts,
+                "expires_at": datetime.now(timezone.utc).timestamp() + conf["timeout"],
+                "locked_out": False,
+            }
+        )
+
+        description = (
+            f"Type the **{conf['code_length']} characters** shown below, then press "
+            "**Enter Code**.\nLetters are not case-sensitive."
+        )
+        embed = discord.Embed(
+            title="Verification",
+            description=f"{note}\n\n{description}" if note else description,
+            colour=discord.Colour.blurple(),
+        )
+        embed.set_image(url="attachment://captcha.png")
+        embed.set_footer(text=f"{attempts} attempt(s) remaining")
+
+        await interaction.response.send_message(
+            embed=embed,
+            file=discord.File(captcha.render(code), filename="captcha.png"),
+            view=CaptchaPrompt(self, code, conf["timeout"]),
+            ephemeral=True,
+        )
+
+    # ------------------------------------------------------------------
     # Listeners
     # ------------------------------------------------------------------
 
@@ -208,61 +365,11 @@ class Verification(commands.Cog):
         if member.bot:
             return
         conf = await self.config.guild(member.guild).all()
-        if not conf["enabled"]:
+        if not conf["enabled"] or not conf["join_roles"]:
             return
-
-        if conf["join_roles"]:
-            await self._apply_roles(
-                member, add=conf["join_roles"], remove=[], reason="Verification: pending"
-            )
-
-        channel = member.guild.get_channel(conf["channel_id"]) if conf["channel_id"] else None
-        if channel is None:
-            log.warning("Verification channel is missing in guild %s.", member.guild.id)
-            return
-        await self._issue_captcha(member, channel, conf)
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or message.author.bot:
-            return
-        conf = await self.config.guild(message.guild).all()
-        if not conf["enabled"] or message.channel.id != conf["channel_id"]:
-            return
-
-        member = message.author
-        state = await self.config.member(member).all()
-        if not state["code"]:
-            return
-
-        if conf["delete_messages"]:
-            try:
-                await message.delete()
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                pass
-
-        if message.content.strip().upper() == state["code"].upper():
-            await self._delete_previous_prompt(member, message.channel)
-            await self._succeed(member, conf)
-            await message.channel.send(
-                f"{member.mention} Verified — welcome to **{message.guild.name}**!",
-                delete_after=15,
-            )
-            return
-
-        remaining = state["attempts"] - 1
-        if remaining <= 0:
-            await self._delete_previous_prompt(member, message.channel)
-            await self._fail(member, conf, "ran out of attempts")
-            await message.channel.send(
-                f"{member.mention} That was your last attempt. "
-                "Please contact a moderator if you need help.",
-                delete_after=30,
-            )
-            return
-
-        # Always burn the failed code and issue a new one.
-        await self._issue_captcha(member, message.channel, conf, attempts=remaining)
+        await self._apply_roles(
+            member, add=conf["join_roles"], remove=[], reason="Verification: pending"
+        )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
@@ -281,13 +388,16 @@ class Verification(commands.Cog):
                 continue
             conf = await self.config.guild(guild).all()
             for member_id, state in members.items():
-                if not state.get("expires_at") or state["expires_at"] > now:
+                # Only people who actually started and stalled mid-flow.
+                if not state.get("code") or not state.get("expires_at"):
+                    continue
+                if state["expires_at"] > now:
                     continue
                 member = guild.get_member(member_id)
                 if member is None:
                     await self.config.member_from_ids(guild_id, member_id).clear()
                     continue
-                await self._fail(member, conf, "did not verify in time")
+                await self._expire(member, conf)
 
     @_sweep_expired.before_loop
     async def _before_sweep(self) -> None:
@@ -307,23 +417,100 @@ class Verification(commands.Cog):
     async def verifyset_channel(
         self, ctx: commands.Context, channel: discord.TextChannel
     ) -> None:
-        """Set the channel where captchas are posted."""
-        perms = channel.permissions_for(ctx.guild.me)
-        missing = [
+        """Set the channel the verification panel lives in."""
+        missing = self._missing_channel_perms(ctx.guild, channel)
+        await self.config.guild(ctx.guild).channel_id.set(channel.id)
+        # A panel in the old channel is no longer ours to track.
+        await self.config.guild(ctx.guild).panel_message_id.set(None)
+        message = (
+            f"Verification channel set to {channel.mention}. "
+            f"Post the panel with `{ctx.clean_prefix}verifyset panel`."
+        )
+        if missing:
+            message += f"\n\nHeads up — I'm missing {humanize_list(missing)} there."
+        await ctx.send(message)
+
+    @staticmethod
+    def _missing_channel_perms(
+        guild: discord.Guild, channel: discord.TextChannel
+    ) -> List[str]:
+        perms = channel.permissions_for(guild.me)
+        return [
             name
             for name, has in (
                 ("Send Messages", perms.send_messages),
                 ("Embed Links", perms.embed_links),
                 ("Attach Files", perms.attach_files),
-                ("Manage Messages", perms.manage_messages),
             )
             if not has
         ]
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        message = f"Verification channel set to {channel.mention}."
+
+    def _panel_embed(self, guild: discord.Guild) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Welcome to {guild.name}",
+            description=(
+                "This server is protected by captcha verification.\n\n"
+                "Press **Verify** below to receive a code that only you can see, "
+                "then type it into the form that appears."
+            ),
+            colour=discord.Colour.blurple(),
+        )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        return embed
+
+    @verifyset.command(name="panel")
+    async def verifyset_panel(self, ctx: commands.Context) -> None:
+        """Post (or refresh) the verification panel."""
+        conf = await self.config.guild(ctx.guild).all()
+        channel = ctx.guild.get_channel(conf["channel_id"]) if conf["channel_id"] else None
+        if channel is None:
+            await ctx.send(
+                f"Set a verification channel first with `{ctx.clean_prefix}verifyset channel`."
+            )
+            return
+
+        missing = self._missing_channel_perms(ctx.guild, channel)
         if missing:
-            message += f"\n\nHeads up — I'm missing {humanize_list(missing)} there."
-        await ctx.send(message)
+            await ctx.send(f"I need {humanize_list(missing)} in {channel.mention} first.")
+            return
+
+        embed = self._panel_embed(ctx.guild)
+        view = VerificationPanel(self)
+        message = None
+
+        if conf["panel_message_id"]:
+            try:
+                message = await channel.fetch_message(conf["panel_message_id"])
+                await message.edit(embed=embed, view=view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                message = None
+
+        if message is None:
+            message = await channel.send(embed=embed, view=view)
+            await self.config.guild(ctx.guild).panel_message_id.set(message.id)
+            await ctx.send(f"Panel posted in {channel.mention}.")
+        else:
+            await ctx.send(f"Existing panel in {channel.mention} refreshed.")
+
+        if channel.permissions_for(ctx.guild.default_role).send_messages:
+            await ctx.send(
+                f"One more thing: `@everyone` can still send messages in {channel.mention}. "
+                "Nothing about this flow needs them to, so denying **Send Messages** there "
+                "closes the last public surface in the channel."
+            )
+
+    @verifyset.command(name="modlog")
+    async def verifyset_modlog(
+        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        """Set a channel for verification events. Omit the channel to turn it off."""
+        if channel is None:
+            await self.config.guild(ctx.guild).modlog_channel_id.set(None)
+            await ctx.send("Verification logging disabled.")
+            return
+        await self.config.guild(ctx.guild).modlog_channel_id.set(channel.id)
+        await ctx.send(f"Verification events will be logged to {channel.mention}.")
 
     async def _modify_role_list(
         self, ctx: commands.Context, key: str, role: discord.Role, *, adding: bool
@@ -392,18 +579,22 @@ class Verification(commands.Cog):
 
     @verifyset.command(name="attempts")
     async def verifyset_attempts(self, ctx: commands.Context, amount: int) -> None:
-        """Set how many tries a member gets (1-10)."""
+        """Set how many tries a member gets before lockout (1-10)."""
         if not 1 <= amount <= 10:
             await ctx.send("Pick a number between 1 and 10.")
             return
         await self.config.guild(ctx.guild).max_attempts.set(amount)
-        await ctx.send(f"Members now get **{amount}** attempt(s).")
+        await ctx.send(f"Members now get **{amount}** attempt(s) before lockout.")
 
     @verifyset.command(name="timeout")
     async def verifyset_timeout(self, ctx: commands.Context, seconds: int) -> None:
-        """Set how long a captcha stays valid, in seconds (60-86400)."""
-        if not 60 <= seconds <= 86400:
-            await ctx.send("Pick a value between 60 and 86400 seconds.")
+        """Set how long a captcha stays valid, in seconds (60-900)."""
+        if not 60 <= seconds <= 900:
+            await ctx.send(
+                "Pick a value between 60 and 900 seconds. Discord expires the "
+                "private captcha message after about 15 minutes, so anything "
+                "longer couldn't be honoured anyway."
+            )
             return
         await self.config.guild(ctx.guild).timeout.set(seconds)
         await ctx.send(f"Captchas now expire after **{seconds}** seconds.")
@@ -428,17 +619,14 @@ class Verification(commands.Cog):
             await ctx.send("I need the **Kick Members** permission for that.")
             return
         await self.config.guild(ctx.guild).on_failure.set(action)
-        await ctx.send(
-            "Members who fail will now be kicked."
-            if action == "kick"
-            else "Members who fail will stay unverified and can try again."
-        )
-
-    @verifyset.command(name="cleanup")
-    async def verifyset_cleanup(self, ctx: commands.Context, enabled: bool) -> None:
-        """Toggle deleting captcha prompts and member guesses."""
-        await self.config.guild(ctx.guild).delete_messages.set(enabled)
-        await ctx.send(f"Message cleanup {'enabled' if enabled else 'disabled'}.")
+        if action == "kick":
+            await ctx.send(
+                "Members who fail or time out will now be kicked. Note this only "
+                "applies to people who actually start verifying — someone who "
+                "joins and never presses the button is never kicked."
+            )
+        else:
+            await ctx.send("Members who fail will stay unverified and can be reset by a mod.")
 
     @verifyset.command(name="toggle")
     async def verifyset_toggle(self, ctx: commands.Context) -> None:
@@ -452,19 +640,22 @@ class Verification(commands.Cog):
         problems = []
         if not conf["channel_id"] or ctx.guild.get_channel(conf["channel_id"]) is None:
             problems.append("Set a verification channel with `[p]verifyset channel`.")
+        if not conf["panel_message_id"]:
+            problems.append(
+                "Post the panel with `[p]verifyset panel` — it's the only way in now."
+            )
         if not conf["add_roles"] and not conf["remove_roles"]:
             problems.append(
                 "Configure at least one role to add or remove with "
                 "`[p]verifyset addrole add` or `[p]verifyset removerole add`."
             )
         if problems:
-            prefix = ctx.clean_prefix
-            listed = "\n".join(f"- {p.replace('[p]', prefix)}" for p in problems)
+            listed = "\n".join(f"- {p.replace('[p]', ctx.clean_prefix)}" for p in problems)
             await ctx.send(f"Not ready yet:\n{listed}")
             return
 
         await self.config.guild(ctx.guild).enabled.set(True)
-        await ctx.send("Verification enabled. New members will be asked to solve a captcha.")
+        await ctx.send("Verification enabled.")
 
     @verifyset.command(name="settings")
     async def verifyset_settings(self, ctx: commands.Context) -> None:
@@ -472,23 +663,21 @@ class Verification(commands.Cog):
         conf = await self.config.guild(ctx.guild).all()
 
         def render_roles(ids: List[int]) -> str:
-            roles = [ctx.guild.get_role(i) for i in ids]
-            mentions = [r.mention for r in roles if r]
+            mentions = [r.mention for r in (ctx.guild.get_role(i) for i in ids) if r]
             return humanize_list(mentions) if mentions else "*none*"
 
-        channel = ctx.guild.get_channel(conf["channel_id"]) if conf["channel_id"] else None
+        def render_channel(channel_id: Optional[int]) -> str:
+            channel = ctx.guild.get_channel(channel_id) if channel_id else None
+            return channel.mention if channel else "*not set*"
 
-        embed = discord.Embed(
-            title="Verification settings",
-            colour=await ctx.embed_colour(),
-        )
+        embed = discord.Embed(title="Verification settings", colour=await ctx.embed_colour())
         embed.add_field(
             name="Status", value="Enabled" if conf["enabled"] else "Disabled", inline=True
         )
+        embed.add_field(name="Channel", value=render_channel(conf["channel_id"]), inline=True)
         embed.add_field(
-            name="Channel", value=channel.mention if channel else "*not set*", inline=True
+            name="Panel", value="Posted" if conf["panel_message_id"] else "*not posted*", inline=True
         )
-        embed.add_field(name="On failure", value=f"`{conf['on_failure']}`", inline=True)
         embed.add_field(name="Roles on join", value=render_roles(conf["join_roles"]), inline=False)
         embed.add_field(name="Added on success", value=render_roles(conf["add_roles"]), inline=False)
         embed.add_field(
@@ -497,8 +686,9 @@ class Verification(commands.Cog):
         embed.add_field(name="Code length", value=str(conf["code_length"]), inline=True)
         embed.add_field(name="Attempts", value=str(conf["max_attempts"]), inline=True)
         embed.add_field(name="Timeout", value=f"{conf['timeout']}s", inline=True)
+        embed.add_field(name="On failure", value=f"`{conf['on_failure']}`", inline=True)
         embed.add_field(
-            name="Cleanup", value="On" if conf["delete_messages"] else "Off", inline=True
+            name="Mod log", value=render_channel(conf["modlog_channel_id"]), inline=True
         )
         await ctx.send(embed=embed)
 
@@ -518,14 +708,14 @@ class Verification(commands.Cog):
         )
 
     # ------------------------------------------------------------------
-    # Manual moderator override
+    # Moderator commands
     # ------------------------------------------------------------------
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
     @commands.group(name="verify")
     async def verify(self, ctx: commands.Context) -> None:
-        """Manually resolve a pending verification."""
+        """Manually resolve a member's verification."""
 
     @verify.command(name="approve")
     async def verify_approve(self, ctx: commands.Context, member: discord.Member) -> None:
@@ -536,7 +726,13 @@ class Verification(commands.Cog):
 
     @verify.command(name="reject")
     async def verify_reject(self, ctx: commands.Context, member: discord.Member) -> None:
-        """Clear a member's pending verification and apply the failure action."""
+        """Lock a member out and apply the configured failure action."""
         conf = await self.config.guild(ctx.guild).all()
-        await self._fail(member, conf, f"rejected by {ctx.author}")
+        await self._lock_out(member, conf, f"was rejected by {ctx.author}")
         await ctx.send(f"{member.mention}'s verification was rejected.")
+
+    @verify.command(name="reset")
+    async def verify_reset(self, ctx: commands.Context, member: discord.Member) -> None:
+        """Clear a lockout so a member can try again."""
+        await self.config.member(member).clear()
+        await ctx.send(f"{member.mention} can verify again.")
