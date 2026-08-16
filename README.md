@@ -20,6 +20,7 @@ Requires Red 3.5.0 or newer. Dependencies (Pillow) are installed automatically.
 | Cog | Description |
 | --- | --- |
 | `verification` | Gate new members behind an image captcha delivered through a button panel, with configurable roles to add and remove on success. |
+| `topics` | Suggest random conversation starters, and let anyone anonymously ask the channel to change the subject. |
 
 ## Verification — quick start
 
@@ -83,6 +84,68 @@ Only submitting wrong codes until no attempts remain triggers `onfail`.
 That leaves one deliberate gap: a member who joins and never presses Verify is never
 actioned at all. They keep the join role and no access until you remove them yourself.
 
+## Topics — quick start
+
+The cog works the moment it loads, with 60 built-in conversation starters. Two things
+are worth doing straight away:
+
+```
+[p]topicset modlog #staff-log     # so moderators can follow up on change requests
+[p]topicset settings              # review everything
+```
+
+### Enable slash commands
+
+**Do this.** `[p]changetopic` is only truly anonymous as a slash command, and slash
+commands have to be turned on by the bot owner:
+
+```
+[p]slash enablecog Topics
+[p]slash sync
+```
+
+With `/changetopic`, nothing the requester does is ever visible — Discord shows the
+invocation to no one but them, and the bot's reply is private.
+
+The prefix version is a fallback. It works by **deleting the command message**, which
+needs the **Manage Messages** permission and still leaves a brief window where anyone
+watching the channel could see who typed it. If the bot cannot delete the message, the
+request is not sent at all and the member is told to use the slash command instead —
+better a failed request than one with a name attached.
+
+### How a request works
+
+1. Someone runs `/changetopic`, optionally with a note.
+2. The channel gets a nameless embed: *someone here would like to move on*, plus the
+   note if there was one.
+3. The mod-log channel gets a separate embed naming the requester, quoting the note,
+   and linking straight to the public notice so a moderator can jump into the
+   conversation.
+4. The requester gets a private confirmation.
+
+Notes are posted by the bot with mentions disabled, so an anonymous note can never be
+used to ping the server from behind the bot.
+
+### Who can see what
+
+This is the part to get right. The mod-log channel is the *only* thing standing between
+a request and its author, so **lock it to your staff** — `[p]topicset modlog` warns you
+if `@everyone` can read the channel you pick.
+
+Requests are deliberately **not** written to Red's built-in modlog. Core's `[p]case`
+and `[p]casesfor` are readable by every member of the server, so anyone could have
+looked up who filed a request. A cog-owned channel puts that behind real permissions.
+
+If no mod-log channel is set, requests still appear in the channel anonymously, but no
+one is told who made them and there is nothing to follow up on.
+
+### Topics
+
+`[p]topic` draws from the 60 built-in starters plus anything you add with
+`[p]topicset add`. Recently-used topics are skipped so the same one doesn't come up
+twice in a row. To run on your own list alone, add some topics and then turn the
+built-ins off with `[p]topicset defaults`.
+
 ## Command reference
 
 ### Setup — `[p]verifyset` (requires Manage Server)
@@ -110,6 +173,29 @@ actioned at all. They keep the join role and no access until you remove them you
 | `approve <member>` | Pass a member through without solving the captcha |
 | `reject <member>` | Lock a member out and apply the failure action |
 | `reset <member>` | Clear a lockout so a member can try again |
+
+### Topics — everyone
+
+| Command | Description |
+| --- | --- |
+| `topic` | Suggest a random conversation topic |
+| `changetopic [message]` | Anonymously ask the channel to change the subject, with an optional note |
+
+Both are available as slash commands once the owner runs `[p]slash enablecog Topics`.
+
+### Topics setup — `[p]topicset` (requires Manage Server)
+
+| Command | Description |
+| --- | --- |
+| `add <topic>` | Add a custom topic |
+| `remove <number>` | Remove a custom topic by its number from `list` |
+| `list` | Show the custom topics |
+| `clear` | Remove every custom topic |
+| `defaults` | Turn the 60 built-in topics on or off |
+| `modlog [channel]` | Log change requests to a channel; omit the channel to disable |
+| `cooldown <0-3600>` | Seconds a member must wait between requests; `0` disables |
+| `toggle` | Enable or disable `changetopic` |
+| `settings` | Show the current configuration |
 
 ## License
 
