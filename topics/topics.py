@@ -43,6 +43,7 @@ class Topics(commands.Cog):
         "recent_topics": [],
         "modlog_channel_id": None,
         "cooldown": 300,
+        "dm_on_success": True,
     }
 
     DEFAULT_MEMBER = {
@@ -158,15 +159,23 @@ class Topics(commands.Cog):
             return False
         return True
 
-    async def _reply_private(self, ctx: commands.Context, content: str) -> None:
+    async def _reply_private(
+        self, ctx: commands.Context, content: str, *, dm: bool = True
+    ) -> None:
         """Answer where only the requester can see it.
 
         Slash gets an ephemeral reply. Prefix gets a DM -- the invoking message
         is gone by now, so there is nothing left in the channel to reply to
         without naming them.
+
+        ``dm`` only ever applies to the prefix path. An ephemeral reply costs
+        the member nothing and a deferred interaction *has* to be answered, so
+        the only thing worth making optional is the unsolicited DM.
         """
         if ctx.interaction is not None:
             await ctx.send(content, ephemeral=True)
+            return
+        if not dm:
             return
         try:
             await ctx.author.send(content)
@@ -269,7 +278,11 @@ class Topics(commands.Cog):
                 "\n\nThis server hasn't set up a moderator log for these requests, so "
                 "no one has been notified beyond the channel itself."
             )
-        await self._reply_private(ctx, confirmation)
+        # The request went through and the member can see that for themselves in
+        # the channel, so this one is a courtesy. Everything else this command
+        # says privately is a failure they'd otherwise never learn about, and
+        # stays unconditional.
+        await self._reply_private(ctx, confirmation, dm=conf["dm_on_success"])
 
     # ------------------------------------------------------------------
     # Configuration commands
@@ -423,6 +436,24 @@ class Topics(commands.Cog):
                 "a change, and the requests are anonymous to the channel."
             )
 
+    @topicset.command(name="dm")
+    async def topicset_dm(self, ctx: commands.Context) -> None:
+        """Turn the DM confirming a successful request on or off."""
+        enabled = await self.config.guild(ctx.guild).dm_on_success()
+        await self.config.guild(ctx.guild).dm_on_success.set(not enabled)
+        if enabled:
+            await ctx.send(
+                "I'll stop DMing members to confirm a request went through. They'll "
+                "still be told when one **doesn't** — a silent failure would leave "
+                "someone believing they'd been heard when they hadn't.\n\n"
+                "This only affects the prefix command. `/changetopic` confirms "
+                "privately in Discord itself, which sends no DM either way."
+            )
+        else:
+            await ctx.send(
+                f"I'll DM members to confirm `{ctx.clean_prefix}changetopic` went through."
+            )
+
     @topicset.command(name="toggle")
     async def topicset_toggle(self, ctx: commands.Context) -> None:
         """Turn topic change requests on or off."""
@@ -466,6 +497,11 @@ class Topics(commands.Cog):
         )
         embed.add_field(name="Custom topics", value=str(len(conf["topics"])), inline=True)
         embed.add_field(name="Total pool", value=str(len(self._pool(conf))), inline=True)
+        embed.add_field(
+            name="Confirmation DM",
+            value="On" if conf["dm_on_success"] else "Off",
+            inline=True,
+        )
         if not conf["modlog_channel_id"]:
             embed.set_footer(
                 text=(

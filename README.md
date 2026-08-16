@@ -123,6 +123,15 @@ better a failed request than one with a name attached.
    conversation.
 4. The requester gets a private confirmation.
 
+That last confirmation is a DM when the prefix command is used, and `[p]topicset dm`
+turns it off for servers that would rather the bot not message members unprompted. It
+only applies to the prefix command — `/changetopic` confirms privately inside Discord
+and never sends a DM either way.
+
+Turning it off silences the *success* message only. A member is always told when a
+request **fails**, because a silent failure would leave someone believing they'd been
+heard when they hadn't.
+
 Notes are posted by the bot with mentions disabled, so an anonymous note can never be
 used to ping the server from behind the bot.
 
@@ -194,6 +203,7 @@ Both are available as slash commands once the owner runs `[p]slash enablecog Top
 | `defaults` | Turn the 60 built-in topics on or off |
 | `modlog [channel]` | Log change requests to a channel; omit the channel to disable |
 | `cooldown <0-3600>` | Seconds a member must wait between requests; `0` disables |
+| `dm` | Whether to DM a member confirming their request went through (prefix only) |
 | `toggle` | Enable or disable `changetopic` |
 | `settings` | Show the current configuration |
 
