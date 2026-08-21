@@ -52,6 +52,18 @@ class Quarantine(commands.Cog):
         self.config = Config.get_conf(self, identifier=1928374650, force_registration=True)
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def _fire_and_forget(self, coro) -> None:
+        """Run ``coro`` without blocking the caller. Keeps a strong ref so it isn't GC'd mid-flight."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_task_done)
+
+    def _background_task_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.exception("Background quarantine task failed", exc_info=task.exception())
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         return f"{super().format_help_for_context(ctx)}\n\nAuthor: {self.__author__}\nVersion: {self.__version__}"
@@ -381,7 +393,7 @@ class Quarantine(commands.Cog):
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
-    @commands.command(name="quarantine")
+    @commands.hybrid_command(name="quarantine")
     async def quarantine(
         self, ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None
     ) -> None:
@@ -392,7 +404,8 @@ class Quarantine(commands.Cog):
         if role is None or category is None:
             await ctx.send(
                 f"Set up the quarantine role and category first with "
-                f"`{ctx.clean_prefix}quarantineset role` and `{ctx.clean_prefix}quarantineset category`."
+                f"`{ctx.clean_prefix}quarantineset role` and `{ctx.clean_prefix}quarantineset category`.",
+                ephemeral=True,
             )
             return
 
@@ -401,32 +414,42 @@ class Quarantine(commands.Cog):
             existing = ctx.guild.get_channel(state["channel_id"]) if state["channel_id"] else None
             await ctx.send(
                 f"{member.mention} is already quarantined"
-                + (f" — see {existing.mention}." if existing else ".")
+                + (f" — see {existing.mention}." if existing else "."),
+                ephemeral=True,
             )
             return
 
         problem = self._role_problem(ctx.guild, role)
         if problem:
-            await ctx.send(problem)
+            await ctx.send(problem, ephemeral=True)
             return
 
         to_strip = self._manageable_roles(ctx.guild, member.roles)
+        final_roles = [r for r in member.roles if r not in to_strip]
+        if role not in final_roles:
+            final_roles.append(role)
         try:
-            if to_strip:
-                await member.remove_roles(*to_strip, reason=f"Quarantine: {reason or 'no reason given'}")
-            await member.add_roles(role, reason=f"Quarantine: {reason or 'no reason given'}")
+            await member.edit(roles=final_roles, reason=f"Quarantine: {reason or 'no reason given'}")
         except (discord.Forbidden, discord.HTTPException) as error:
-            await ctx.send(f"Couldn't update {member.mention}'s roles: {error}")
+            await ctx.send(f"Couldn't update {member.mention}'s roles: {error}", ephemeral=True)
             return
 
+        overwrites = {member: ALLOW_VIEW_SEND}
+        for mod_role in (await self.bot.get_admin_roles(ctx.guild)) + (
+            await self.bot.get_mod_roles(ctx.guild)
+        ):
+            overwrites[mod_role] = ALLOW_VIEW_SEND
         try:
             channel = await category.create_text_channel(
                 f"{self._slugify(member.display_name)}-discussion",
-                overwrites={member: ALLOW_VIEW_SEND},
+                overwrites=overwrites,
                 reason=f"Quarantine: {ctx.author}",
             )
         except (discord.Forbidden, discord.HTTPException) as error:
-            await ctx.send(f"Roles were updated, but I couldn't create the discussion channel: {error}")
+            await ctx.send(
+                f"Roles were updated, but I couldn't create the discussion channel: {error}",
+                ephemeral=True,
+            )
             return
 
         now = datetime.now(timezone.utc).timestamp()
@@ -448,23 +471,26 @@ class Quarantine(commands.Cog):
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Quarantined by", value=ctx.author.mention)
-        await channel.send(content=f"{member.mention} {ctx.author.mention}", embed=embed)
-
-        await ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.")
-        await self._log(
-            ctx.guild,
-            title="Member quarantined",
-            description=f"{member} ({member.id}) quarantined by {ctx.author}.\n{reason or ''}",
+        await asyncio.gather(
+            channel.send(content=f"{member.mention} {ctx.author.mention}", embed=embed),
+            ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.", ephemeral=True),
+        )
+        self._fire_and_forget(
+            self._log(
+                ctx.guild,
+                title="Member quarantined",
+                description=f"{member} ({member.id}) quarantined by {ctx.author}.\n{reason or ''}",
+            )
         )
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
-    @commands.command(name="unquarantine")
+    @commands.hybrid_command(name="unquarantine")
     async def unquarantine(self, ctx: commands.Context, member: discord.Member) -> None:
         """Restore a quarantined member's roles and archive their discussion channel."""
         state = await self.config.member(member).all()
         if not state["quarantined"]:
-            await ctx.send(f"{member.mention} isn't quarantined.")
+            await ctx.send(f"{member.mention} isn't quarantined.", ephemeral=True)
             return
 
         role_id = await self.config.guild(ctx.guild).quarantine_role_id()
@@ -481,23 +507,26 @@ class Quarantine(commands.Cog):
                 continue
             restored.append(candidate)
 
+        final_roles = [r for r in member.roles if role is None or r != role]
+        for candidate in restored:
+            if candidate not in final_roles:
+                final_roles.append(candidate)
         try:
-            if restored:
-                await member.add_roles(*restored, reason=f"Unquarantine by {ctx.author}")
-            if role is not None and role in member.roles:
-                await member.remove_roles(role, reason=f"Unquarantine by {ctx.author}")
+            await member.edit(roles=final_roles, reason=f"Unquarantine by {ctx.author}")
         except (discord.Forbidden, discord.HTTPException) as error:
-            await ctx.send(f"Couldn't fully restore {member.mention}'s roles: {error}")
-
-        await self._archive_and_cleanup(ctx.guild, member.id, state, "unquarantined")
+            await ctx.send(f"Couldn't fully restore {member.mention}'s roles: {error}", ephemeral=True)
 
         message = f"{member.mention} has been unquarantined."
         if skipped:
             message += f"\n\nCouldn't restore: {humanize_list(skipped)}."
-        await ctx.send(message)
-        await self._log(
-            ctx.guild,
-            title="Member unquarantined",
-            description=f"{member} ({member.id}) unquarantined by {ctx.author}.",
-            colour=UNQUARANTINE_COLOUR,
+        await ctx.send(message, ephemeral=True)
+
+        self._fire_and_forget(self._archive_and_cleanup(ctx.guild, member.id, state, "unquarantined"))
+        self._fire_and_forget(
+            self._log(
+                ctx.guild,
+                title="Member unquarantined",
+                description=f"{member} ({member.id}) unquarantined by {ctx.author}.",
+                colour=UNQUARANTINE_COLOUR,
+            )
         )
