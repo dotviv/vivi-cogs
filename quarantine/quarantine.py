@@ -22,7 +22,14 @@ LOG_COLOUR = discord.Colour.dark_red()
 UNQUARANTINE_COLOUR = discord.Colour.green()
 
 DENY_VIEW = discord.PermissionOverwrite(view_channel=False)
-ALLOW_VIEW_SEND = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+ALLOW_DISCUSSION = discord.PermissionOverwrite(
+    view_channel=True,
+    send_messages=True,
+    attach_files=True,
+    embed_links=True,
+    read_message_history=True,
+    use_application_commands=True,
+)
 
 
 class Quarantine(commands.Cog):
@@ -330,7 +337,7 @@ class Quarantine(commands.Cog):
         for role in (await self.bot.get_admin_roles(ctx.guild)) + (
             await self.bot.get_mod_roles(ctx.guild)
         ):
-            overwrites[role] = ALLOW_VIEW_SEND
+            overwrites[role] = ALLOW_DISCUSSION
 
         try:
             if category is None:
@@ -434,11 +441,11 @@ class Quarantine(commands.Cog):
             await ctx.send(f"Couldn't update {member.mention}'s roles: {error}", ephemeral=True)
             return
 
-        overwrites = {member: ALLOW_VIEW_SEND}
+        overwrites = {member: ALLOW_DISCUSSION}
         for mod_role in (await self.bot.get_admin_roles(ctx.guild)) + (
             await self.bot.get_mod_roles(ctx.guild)
         ):
-            overwrites[mod_role] = ALLOW_VIEW_SEND
+            overwrites[mod_role] = ALLOW_DISCUSSION
         try:
             channel = await category.create_text_channel(
                 f"{self._slugify(member.display_name)}-discussion",
