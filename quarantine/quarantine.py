@@ -1,0 +1,503 @@
+"""Pull a troublesome member out of every channel and into a private room with mods."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import discord
+from redbot.core import Config, commands
+from redbot.core.bot import Red
+from redbot.core.data_manager import cog_data_path
+from redbot.core.utils.chat_formatting import humanize_list
+from redbot.core.utils.predicates import MessagePredicate
+
+log = logging.getLogger("red.vivi-cogs.quarantine")
+
+LOG_COLOUR = discord.Colour.dark_red()
+UNQUARANTINE_COLOUR = discord.Colour.green()
+
+DENY_VIEW = discord.PermissionOverwrite(view_channel=False)
+ALLOW_VIEW_SEND = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+
+class Quarantine(commands.Cog):
+    """Strip a member's roles and channel access, and give mods a private room to talk to them."""
+
+    __author__ = "dotviv"
+    __version__ = "1.0.0"
+
+    DEFAULT_GUILD = {
+        "quarantine_role_id": None,
+        "category_id": None,
+        "log_channel_id": None,
+    }
+
+    DEFAULT_MEMBER = {
+        "quarantined": False,
+        "channel_id": None,
+        "previous_roles": [],
+        "quarantined_by": None,
+        "quarantined_at": None,
+        "reason": None,
+    }
+
+    def __init__(self, bot: Red) -> None:
+        self.bot = bot
+        # This identifier keys every guild's stored settings. Never change it.
+        self.config = Config.get_conf(self, identifier=1928374650, force_registration=True)
+        self.config.register_guild(**self.DEFAULT_GUILD)
+        self.config.register_member(**self.DEFAULT_MEMBER)
+
+    def format_help_for_context(self, ctx: commands.Context) -> str:
+        return f"{super().format_help_for_context(ctx)}\n\nAuthor: {self.__author__}\nVersion: {self.__version__}"
+
+    async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
+        """Drop any quarantine record and transcript belonging to ``user_id``."""
+        for guild_id, members in (await self.config.all_members()).items():
+            if user_id in members:
+                await self.config.member_from_ids(guild_id, user_id).clear()
+        path = self._transcript_path(user_id)
+        if path.exists():
+            path.unlink()
+
+    # ------------------------------------------------------------------
+    # Role safety (mirrors verification.py's hierarchy checks)
+    # ------------------------------------------------------------------
+
+    def _role_problem(self, guild: discord.Guild, role: discord.Role) -> Optional[str]:
+        """Return why the bot cannot manage ``role``, or ``None`` if it can.
+
+        Discord fails role assignment *silently* when the hierarchy is wrong, so
+        this is checked at configuration time rather than at 3am during a raid.
+        """
+        me = guild.me
+        if role.is_default():
+            return "That's the `@everyone` role, which can't be assigned."
+        if role.managed:
+            return f"{role.mention} is managed by an integration and can't be assigned manually."
+        if not me.guild_permissions.manage_roles:
+            return "I don't have the **Manage Roles** permission in this server."
+        if role >= me.top_role:
+            return (
+                f"{role.mention} is above (or equal to) my highest role, so I can't manage it. "
+                "Move my role higher in **Server Settings → Roles**."
+            )
+        return None
+
+    @staticmethod
+    def _manageable_roles(guild: discord.Guild, roles: List[discord.Role]) -> List[discord.Role]:
+        """Roles the bot can actually add/remove: not @everyone, not managed, below our top role."""
+        me = guild.me
+        return [
+            role
+            for role in roles
+            if not role.is_default() and not role.managed and role < me.top_role
+        ]
+
+    # ------------------------------------------------------------------
+    # Mod log (same shape as verification.py's _modlog / topics.py's _log_request)
+    # ------------------------------------------------------------------
+
+    async def _log(
+        self,
+        guild: discord.Guild,
+        *,
+        title: str,
+        description: str,
+        colour: discord.Colour = LOG_COLOUR,
+    ) -> None:
+        channel_id = await self.config.guild(guild).log_channel_id()
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return
+        embed = discord.Embed(
+            title=title, description=description, colour=colour, timestamp=discord.utils.utcnow()
+        )
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("Could not write to the log channel in guild %s.", guild.id)
+
+    # ------------------------------------------------------------------
+    # Channel visibility
+    # ------------------------------------------------------------------
+
+    async def _deny_channel(self, channel: discord.abc.GuildChannel, role: discord.Role) -> bool:
+        """Apply the quarantine deny-overwrite to a single channel. Returns success."""
+        try:
+            await channel.set_permissions(
+                role, overwrite=DENY_VIEW, reason="Quarantine: hide channel from quarantined role"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+        return True
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        role_id = await self.config.guild(channel.guild).quarantine_role_id()
+        if not role_id:
+            return
+        role = channel.guild.get_role(role_id)
+        if role is None:
+            return
+        await self._deny_channel(channel, role)
+
+    # ------------------------------------------------------------------
+    # Transcript archiving
+    # ------------------------------------------------------------------
+
+    def _transcript_path(self, user_id: int):
+        directory = cog_data_path(self) / "transcripts"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{user_id}.json"
+
+    async def _write_transcript(
+        self,
+        member_id: int,
+        channel: discord.TextChannel,
+        *,
+        session: Dict[str, Any],
+        resolution: str,
+    ) -> None:
+        messages = []
+        try:
+            async for message in channel.history(limit=None, oldest_first=True):
+                messages.append(
+                    {
+                        "author_id": message.author.id,
+                        "author_name": str(message.author),
+                        "timestamp": message.created_at.timestamp(),
+                        "content": message.content,
+                        "attachments": [a.url for a in message.attachments],
+                    }
+                )
+        except (discord.Forbidden, discord.HTTPException) as error:
+            log.warning("Could not read history for channel %s: %s", channel.id, error)
+
+        session = dict(session)
+        session["ended_at"] = datetime.now(timezone.utc).timestamp()
+        session["resolution"] = resolution
+        session["messages"] = messages
+
+        path = self._transcript_path(member_id)
+        existing: List[Dict[str, Any]] = []
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                log.warning("Transcript file for %s was unreadable; starting fresh.", member_id)
+        existing.append(session)
+        path.write_text(json.dumps(existing, indent=2))
+
+    async def _archive_and_cleanup(
+        self, guild: discord.Guild, member_id: int, state: Dict[str, Any], resolution: str
+    ) -> None:
+        """Shared by unquarantine and the on_member_remove/on_member_ban listeners."""
+        channel = guild.get_channel(state["channel_id"]) if state["channel_id"] else None
+        session = {
+            "guild_id": guild.id,
+            "channel_id": state["channel_id"],
+            "quarantined_by": state["quarantined_by"],
+            "quarantined_at": state["quarantined_at"],
+            "reason": state["reason"],
+        }
+        if channel is not None:
+            await self._write_transcript(member_id, channel, session=session, resolution=resolution)
+            try:
+                await channel.delete(reason=f"Quarantine: {resolution}")
+            except (discord.Forbidden, discord.HTTPException) as error:
+                log.warning("Could not delete quarantine channel %s: %s", channel.id, error)
+        await self.config.member_from_ids(guild.id, member_id).clear()
+
+    # ------------------------------------------------------------------
+    # Listeners: departure while quarantined
+    # ------------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        state = await self.config.member(member).all()
+        if not state["quarantined"]:
+            return
+        await self._archive_and_cleanup(member.guild, member.id, state, "left_or_kicked")
+        await self._log(
+            member.guild,
+            title="Quarantine ended: member left or was kicked",
+            description=f"{member} ({member.id}) left the server while quarantined.",
+        )
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.abc.User) -> None:
+        state = await self.config.member_from_ids(guild.id, user.id).all()
+        if not state["quarantined"]:
+            return
+        await self._archive_and_cleanup(guild, user.id, state, "banned")
+        await self._log(
+            guild,
+            title="Quarantine ended: member banned",
+            description=f"{user} ({user.id}) was banned while quarantined.",
+        )
+
+    # ------------------------------------------------------------------
+    # Configuration commands
+    # ------------------------------------------------------------------
+
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    @commands.group(name="quarantineset")
+    async def quarantineset(self, ctx: commands.Context) -> None:
+        """Configure the Quarantine cog."""
+
+    @quarantineset.command(name="role")
+    async def quarantineset_role(
+        self, ctx: commands.Context, role: Optional[discord.Role] = None
+    ) -> None:
+        """Set (or auto-create) the Quarantined role, and hide every channel from it."""
+        if role is None:
+            if not ctx.guild.me.guild_permissions.manage_roles:
+                await ctx.send("I need the **Manage Roles** permission to create one.")
+                return
+            try:
+                role = await ctx.guild.create_role(
+                    name="Quarantined", permissions=discord.Permissions.none(),
+                    reason=f"Quarantine setup by {ctx.author}",
+                )
+            except discord.Forbidden:
+                await ctx.send("I don't have permission to create roles here.")
+                return
+        else:
+            problem = self._role_problem(ctx.guild, role)
+            if problem:
+                await ctx.send(problem)
+                return
+
+        channels = ctx.guild.channels
+        await ctx.send(
+            f"This will deny **View Channel** for {role.mention} on all "
+            f"{len(channels)} channels and categories in this server. Reply `yes` to confirm."
+        )
+        pred = MessagePredicate.yes_or_no(ctx)
+        try:
+            await self.bot.wait_for("message", check=pred, timeout=30)
+        except asyncio.TimeoutError:
+            await ctx.send("Timed out — nothing was changed.")
+            return
+        if not pred.result:
+            await ctx.send("Cancelled.")
+            return
+
+        await self.config.guild(ctx.guild).quarantine_role_id.set(role.id)
+        applied = 0
+        failed = 0
+        for channel in channels:
+            if await self._deny_channel(channel, role):
+                applied += 1
+            else:
+                failed += 1
+        message = f"Quarantine role set to {role.mention}. Hid {applied} channel(s)."
+        if failed:
+            message += f" Failed on {failed} — I likely lack **Manage Channels** there."
+        await ctx.send(message)
+
+    @quarantineset.command(name="category")
+    async def quarantineset_category(
+        self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None
+    ) -> None:
+        """Set (or auto-create) the category quarantine discussion channels live in."""
+        if not ctx.guild.me.guild_permissions.manage_channels:
+            await ctx.send("I need the **Manage Channels** permission for that.")
+            return
+
+        overwrites = {ctx.guild.default_role: DENY_VIEW}
+        for role in (await self.bot.get_admin_roles(ctx.guild)) + (
+            await self.bot.get_mod_roles(ctx.guild)
+        ):
+            overwrites[role] = ALLOW_VIEW_SEND
+
+        try:
+            if category is None:
+                category = await ctx.guild.create_category(
+                    "Quarantined Discussion",
+                    overwrites=overwrites,
+                    reason=f"Quarantine setup by {ctx.author}",
+                )
+            else:
+                for target, overwrite in overwrites.items():
+                    await category.set_permissions(target, overwrite=overwrite)
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to manage that category.")
+            return
+
+        await self.config.guild(ctx.guild).category_id.set(category.id)
+        await ctx.send(f"Quarantine discussion channels will be created under **{category.name}**.")
+
+    @quarantineset.command(name="log")
+    async def quarantineset_log(
+        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        """Set a channel for quarantine/unquarantine events. Omit the channel to turn it off."""
+        if channel is None:
+            await self.config.guild(ctx.guild).log_channel_id.set(None)
+            await ctx.send("Quarantine logging disabled.")
+            return
+        await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
+        await ctx.send(f"Quarantine events will be logged to {channel.mention}.")
+
+    @quarantineset.command(name="settings")
+    async def quarantineset_settings(self, ctx: commands.Context) -> None:
+        """Show the current configuration."""
+        conf = await self.config.guild(ctx.guild).all()
+        role = ctx.guild.get_role(conf["quarantine_role_id"]) if conf["quarantine_role_id"] else None
+        category = (
+            ctx.guild.get_channel(conf["category_id"]) if conf["category_id"] else None
+        )
+        log_channel = (
+            ctx.guild.get_channel(conf["log_channel_id"]) if conf["log_channel_id"] else None
+        )
+        embed = discord.Embed(title="Quarantine settings", colour=await ctx.embed_colour())
+        embed.add_field(name="Role", value=role.mention if role else "*not set*", inline=True)
+        embed.add_field(
+            name="Category", value=category.name if category else "*not set*", inline=True
+        )
+        embed.add_field(
+            name="Log channel", value=log_channel.mention if log_channel else "*not set*", inline=True
+        )
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # Moderator commands
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _slugify(name: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        return slug or "member"
+
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_roles=True)
+    @commands.command(name="quarantine")
+    async def quarantine(
+        self, ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None
+    ) -> None:
+        """Strip a member of every role and channel, and open a private room with mods."""
+        conf = await self.config.guild(ctx.guild).all()
+        role = ctx.guild.get_role(conf["quarantine_role_id"]) if conf["quarantine_role_id"] else None
+        category = ctx.guild.get_channel(conf["category_id"]) if conf["category_id"] else None
+        if role is None or category is None:
+            await ctx.send(
+                f"Set up the quarantine role and category first with "
+                f"`{ctx.clean_prefix}quarantineset role` and `{ctx.clean_prefix}quarantineset category`."
+            )
+            return
+
+        state = await self.config.member(member).all()
+        if state["quarantined"]:
+            existing = ctx.guild.get_channel(state["channel_id"]) if state["channel_id"] else None
+            await ctx.send(
+                f"{member.mention} is already quarantined"
+                + (f" — see {existing.mention}." if existing else ".")
+            )
+            return
+
+        problem = self._role_problem(ctx.guild, role)
+        if problem:
+            await ctx.send(problem)
+            return
+
+        to_strip = self._manageable_roles(ctx.guild, member.roles)
+        try:
+            if to_strip:
+                await member.remove_roles(*to_strip, reason=f"Quarantine: {reason or 'no reason given'}")
+            await member.add_roles(role, reason=f"Quarantine: {reason or 'no reason given'}")
+        except (discord.Forbidden, discord.HTTPException) as error:
+            await ctx.send(f"Couldn't update {member.mention}'s roles: {error}")
+            return
+
+        try:
+            channel = await category.create_text_channel(
+                f"{self._slugify(member.display_name)}-discussion",
+                overwrites={member: ALLOW_VIEW_SEND},
+                reason=f"Quarantine: {ctx.author}",
+            )
+        except (discord.Forbidden, discord.HTTPException) as error:
+            await ctx.send(f"Roles were updated, but I couldn't create the discussion channel: {error}")
+            return
+
+        now = datetime.now(timezone.utc).timestamp()
+        await self.config.member(member).set(
+            {
+                "quarantined": True,
+                "channel_id": channel.id,
+                "previous_roles": [r.id for r in to_strip],
+                "quarantined_by": ctx.author.id,
+                "quarantined_at": now,
+                "reason": reason,
+            }
+        )
+
+        embed = discord.Embed(
+            title="Quarantined",
+            description=reason or "*No reason given.*",
+            colour=LOG_COLOUR,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Quarantined by", value=ctx.author.mention)
+        await channel.send(content=f"{member.mention} {ctx.author.mention}", embed=embed)
+
+        await ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.")
+        await self._log(
+            ctx.guild,
+            title="Member quarantined",
+            description=f"{member} ({member.id}) quarantined by {ctx.author}.\n{reason or ''}",
+        )
+
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_roles=True)
+    @commands.command(name="unquarantine")
+    async def unquarantine(self, ctx: commands.Context, member: discord.Member) -> None:
+        """Restore a quarantined member's roles and archive their discussion channel."""
+        state = await self.config.member(member).all()
+        if not state["quarantined"]:
+            await ctx.send(f"{member.mention} isn't quarantined.")
+            return
+
+        role_id = await self.config.guild(ctx.guild).quarantine_role_id()
+        role = ctx.guild.get_role(role_id) if role_id else None
+
+        restored, skipped = [], []
+        for prev_role_id in state["previous_roles"]:
+            candidate = ctx.guild.get_role(prev_role_id)
+            if candidate is None:
+                skipped.append(f"<@&{prev_role_id}> (deleted)")
+                continue
+            if self._role_problem(ctx.guild, candidate):
+                skipped.append(candidate.mention)
+                continue
+            restored.append(candidate)
+
+        try:
+            if restored:
+                await member.add_roles(*restored, reason=f"Unquarantine by {ctx.author}")
+            if role is not None and role in member.roles:
+                await member.remove_roles(role, reason=f"Unquarantine by {ctx.author}")
+        except (discord.Forbidden, discord.HTTPException) as error:
+            await ctx.send(f"Couldn't fully restore {member.mention}'s roles: {error}")
+
+        await self._archive_and_cleanup(ctx.guild, member.id, state, "unquarantined")
+
+        message = f"{member.mention} has been unquarantined."
+        if skipped:
+            message += f"\n\nCouldn't restore: {humanize_list(skipped)}."
+        await ctx.send(message)
+        await self._log(
+            ctx.guild,
+            title="Member unquarantined",
+            description=f"{member} ({member.id}) unquarantined by {ctx.author}.",
+            colour=UNQUARANTINE_COLOUR,
+        )

@@ -1,0 +1,15 @@
+{
+    "author": ["dotviv"],
+    "name": "Quarantine",
+    "install_msg": "Thank you for installing Quarantine!\nRun `[p]quarantineset` to begin.",
+    "short": "Quickly quarantine troublesome members for a quick chat.",
+    "description": "Quarantine members for a quick chat with mods. Members lose all roles, and regain them when quarantine is lifted. Chats take place in a private generated channel that's cleaned up afterwards.",
+    "tags": [
+        "moderation",
+        "quarantine"
+    ],
+    "requirements": [],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "end_user_data_statement": "This cog stores the Discord user ID, role assignment, and a transcript of any related messages sent during quarantine."
+}
