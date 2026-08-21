@@ -122,7 +122,7 @@ class Quarantine(commands.Cog):
     # Mod log (same shape as verification.py's _modlog / topics.py's _log_request)
     # ------------------------------------------------------------------
 
-    async def _log(
+    async def _modlog(
         self,
         guild: discord.Guild,
         *,
@@ -130,6 +130,8 @@ class Quarantine(commands.Cog):
         description: str,
         colour: discord.Colour = LOG_COLOUR,
     ) -> None:
+        # Config key stays log_channel_id -- guilds already have this set, and renaming
+        # the key would silently drop their existing configuration.
         channel_id = await self.config.guild(guild).log_channel_id()
         if not channel_id:
             return
@@ -142,7 +144,7 @@ class Quarantine(commands.Cog):
         try:
             await channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
-            log.warning("Could not write to the log channel in guild %s.", guild.id)
+            log.warning("Could not write to the mod log channel in guild %s.", guild.id)
 
     # ------------------------------------------------------------------
     # Channel visibility
@@ -245,7 +247,7 @@ class Quarantine(commands.Cog):
         if not state["quarantined"]:
             return
         await self._archive_and_cleanup(member.guild, member.id, state, "left_or_kicked")
-        await self._log(
+        await self._modlog(
             member.guild,
             title="Quarantine ended: member left or was kicked",
             description=f"{member} ({member.id}) left the server while quarantined.",
@@ -257,7 +259,7 @@ class Quarantine(commands.Cog):
         if not state["quarantined"]:
             return
         await self._archive_and_cleanup(guild, user.id, state, "banned")
-        await self._log(
+        await self._modlog(
             guild,
             title="Quarantine ended: member banned",
             description=f"{user} ({user.id}) was banned while quarantined.",
@@ -356,14 +358,14 @@ class Quarantine(commands.Cog):
         await self.config.guild(ctx.guild).category_id.set(category.id)
         await ctx.send(f"Quarantine discussion channels will be created under **{category.name}**.")
 
-    @quarantineset.command(name="log")
-    async def quarantineset_log(
+    @quarantineset.command(name="modlog")
+    async def quarantineset_modlog(
         self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
     ) -> None:
         """Set a channel for quarantine/unquarantine events. Omit the channel to turn it off."""
         if channel is None:
             await self.config.guild(ctx.guild).log_channel_id.set(None)
-            await ctx.send("Quarantine logging disabled.")
+            await ctx.send("Quarantine mod log disabled.")
             return
         await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
         await ctx.send(f"Quarantine events will be logged to {channel.mention}.")
@@ -376,7 +378,7 @@ class Quarantine(commands.Cog):
         category = (
             ctx.guild.get_channel(conf["category_id"]) if conf["category_id"] else None
         )
-        log_channel = (
+        modlog_channel = (
             ctx.guild.get_channel(conf["log_channel_id"]) if conf["log_channel_id"] else None
         )
         embed = discord.Embed(title="Quarantine settings", colour=await ctx.embed_colour())
@@ -385,7 +387,9 @@ class Quarantine(commands.Cog):
             name="Category", value=category.name if category else "*not set*", inline=True
         )
         embed.add_field(
-            name="Log channel", value=log_channel.mention if log_channel else "*not set*", inline=True
+            name="Mod log",
+            value=modlog_channel.mention if modlog_channel else "*not set*",
+            inline=True,
         )
         await ctx.send(embed=embed)
 
@@ -483,7 +487,7 @@ class Quarantine(commands.Cog):
             ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.", ephemeral=True),
         )
         self._fire_and_forget(
-            self._log(
+            self._modlog(
                 ctx.guild,
                 title="Member quarantined",
                 description=f"{member} ({member.id}) quarantined by {ctx.author}.\n{reason or ''}",
@@ -530,7 +534,7 @@ class Quarantine(commands.Cog):
 
         self._fire_and_forget(self._archive_and_cleanup(ctx.guild, member.id, state, "unquarantined"))
         self._fire_and_forget(
-            self._log(
+            self._modlog(
                 ctx.guild,
                 title="Member unquarantined",
                 description=f"{member} ({member.id}) unquarantined by {ctx.author}.",
