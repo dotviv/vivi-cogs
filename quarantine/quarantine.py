@@ -441,7 +441,7 @@ class Quarantine(commands.Cog):
             await ctx.send(f"Couldn't update {member.mention}'s roles: {error}", ephemeral=True)
             return
 
-        overwrites = {member: ALLOW_DISCUSSION}
+        overwrites = {ctx.guild.default_role: DENY_VIEW, member: ALLOW_DISCUSSION}
         for mod_role in (await self.bot.get_admin_roles(ctx.guild)) + (
             await self.bot.get_mod_roles(ctx.guild)
         ):
