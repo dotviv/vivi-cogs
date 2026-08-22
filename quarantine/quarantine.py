@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import discord
+from discord import Role, Member, PermissionOverwrite
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
@@ -22,12 +23,28 @@ LOG_COLOUR = discord.Colour.dark_red()
 UNQUARANTINE_COLOUR = discord.Colour.green()
 
 DENY_VIEW = discord.PermissionOverwrite(view_channel=False)
-ALLOW_DISCUSSION = discord.PermissionOverwrite(
+
+QUARANTINED_ACCESS = discord.PermissionOverwrite(
+    view_channel=True,
+    send_messages=True,
+    attach_files=True,
+    read_message_history=True
+)
+MOD_ACCESS = discord.PermissionOverwrite(
+    view_channel=True,
+    send_messages=True,
+    attach_files=True,
+    read_message_history=True,
+    manage_messages=True,
+    use_application_commands=True,
+)
+BOT_ACCESS = discord.PermissionOverwrite(
     view_channel=True,
     send_messages=True,
     attach_files=True,
     embed_links=True,
     read_message_history=True,
+    manage_messages=True,
     use_application_commands=True,
 )
 
@@ -71,6 +88,20 @@ class Quarantine(commands.Cog):
         self._background_tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.exception("Background quarantine task failed", exc_info=task.exception())
+
+    async def apply_bot_overwrite(self, ctx: commands.Context,
+                                  overwrites: dict[Role | Member, PermissionOverwrite]) -> None:
+        bot_member = ctx.guild.get_member(self.bot.user.id)
+
+        if bot_member is None:
+            try:
+                bot_member = await ctx.guild.fetch_member(self.bot.user.id)
+            except discord.HTTPException:
+                log.exception("Failed to locate bot member.")
+
+        assert bot_member is not None # Python is stupid as shit.
+
+        overwrites[bot_member] = BOT_ACCESS
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         return f"{super().format_help_for_context(ctx)}\n\nAuthor: {self.__author__}\nVersion: {self.__version__}"
@@ -336,10 +367,13 @@ class Quarantine(commands.Cog):
             return
 
         overwrites = {ctx.guild.default_role: DENY_VIEW}
+
         for role in (await self.bot.get_admin_roles(ctx.guild)) + (
             await self.bot.get_mod_roles(ctx.guild)
         ):
-            overwrites[role] = ALLOW_DISCUSSION
+            overwrites[role] = MOD_ACCESS
+
+        await self.apply_bot_overwrite(ctx, overwrites)
 
         try:
             if category is None:
@@ -412,6 +446,7 @@ class Quarantine(commands.Cog):
         conf = await self.config.guild(ctx.guild).all()
         role = ctx.guild.get_role(conf["quarantine_role_id"]) if conf["quarantine_role_id"] else None
         category = ctx.guild.get_channel(conf["category_id"]) if conf["category_id"] else None
+
         if role is None or category is None:
             await ctx.send(
                 f"Set up the quarantine role and category first with "
@@ -421,6 +456,7 @@ class Quarantine(commands.Cog):
             return
 
         state = await self.config.member(member).all()
+
         if state["quarantined"]:
             existing = ctx.guild.get_channel(state["channel_id"]) if state["channel_id"] else None
             await ctx.send(
@@ -431,12 +467,14 @@ class Quarantine(commands.Cog):
             return
 
         problem = self._role_problem(ctx.guild, role)
+
         if problem:
             await ctx.send(problem, ephemeral=True)
             return
 
         to_strip = self._manageable_roles(ctx.guild, member.roles)
         final_roles = [r for r in member.roles if r not in to_strip]
+
         if role not in final_roles:
             final_roles.append(role)
         try:
@@ -445,11 +483,15 @@ class Quarantine(commands.Cog):
             await ctx.send(f"Couldn't update {member.mention}'s roles: {error}", ephemeral=True)
             return
 
-        overwrites = {ctx.guild.default_role: DENY_VIEW, member: ALLOW_DISCUSSION}
+        overwrites = {ctx.guild.default_role: DENY_VIEW, member: QUARANTINED_ACCESS}
+
         for mod_role in (await self.bot.get_admin_roles(ctx.guild)) + (
             await self.bot.get_mod_roles(ctx.guild)
         ):
-            overwrites[mod_role] = ALLOW_DISCUSSION
+            overwrites[mod_role] = MOD_ACCESS
+
+        await self.apply_bot_overwrite(ctx, overwrites)
+
         try:
             channel = await category.create_text_channel(
                 f"{self._slugify(member.display_name)}-discussion",
@@ -464,6 +506,7 @@ class Quarantine(commands.Cog):
             return
 
         now = datetime.now(timezone.utc).timestamp()
+
         await self.config.member(member).set(
             {
                 "quarantined": True,
@@ -484,7 +527,7 @@ class Quarantine(commands.Cog):
         embed.add_field(name="Quarantined by", value=ctx.author.mention)
         await asyncio.gather(
             channel.send(content=f"{member.mention} {ctx.author.mention}", embed=embed),
-            ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.", ephemeral=True),
+            ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.", ephemeral=True)
         )
         self._fire_and_forget(
             self._modlog(
@@ -541,3 +584,4 @@ class Quarantine(commands.Cog):
                 colour=UNQUARANTINE_COLOUR,
             )
         )
+
