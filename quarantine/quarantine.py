@@ -17,6 +17,10 @@ from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.predicates import MessagePredicate
 
+from quarantine.embeds import QuarantineEmbeds
+from quarantine.views import QuarantineLiftedChannelPanel
+from shared.mod_log import ModLog
+
 log = logging.getLogger("red.vivi-cogs.quarantine")
 
 LOG_COLOUR = discord.Colour.dark_red()
@@ -148,10 +152,6 @@ class Quarantine(commands.Cog):
             for role in roles
             if not role.is_default() and not role.managed and role < me.top_role
         ]
-
-    # ------------------------------------------------------------------
-    # Mod log (same shape as verification.py's _modlog / topics.py's _log_request)
-    # ------------------------------------------------------------------
 
     async def _modlog(
         self,
@@ -392,22 +392,11 @@ class Quarantine(commands.Cog):
         await self.config.guild(ctx.guild).category_id.set(category.id)
         await ctx.send(f"Quarantine discussion channels will be created under **{category.name}**.")
 
-    @quarantineset.command(name="modlog")
-    async def quarantineset_modlog(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
-    ) -> None:
-        """Set a channel for quarantine/unquarantine events. Omit the channel to turn it off."""
-        if channel is None:
-            await self.config.guild(ctx.guild).log_channel_id.set(None)
-            await ctx.send("Quarantine mod log disabled.")
-            return
-        await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
-        await ctx.send(f"Quarantine events will be logged to {channel.mention}.")
-
     @quarantineset.command(name="settings")
     async def quarantineset_settings(self, ctx: commands.Context) -> None:
         """Show the current configuration."""
         conf = await self.config.guild(ctx.guild).all()
+
         role = ctx.guild.get_role(conf["quarantine_role_id"]) if conf["quarantine_role_id"] else None
         category = (
             ctx.guild.get_channel(conf["category_id"]) if conf["category_id"] else None
@@ -415,17 +404,12 @@ class Quarantine(commands.Cog):
         modlog_channel = (
             ctx.guild.get_channel(conf["log_channel_id"]) if conf["log_channel_id"] else None
         )
-        embed = discord.Embed(title="Quarantine settings", colour=await ctx.embed_colour())
-        embed.add_field(name="Role", value=role.mention if role else "*not set*", inline=True)
-        embed.add_field(
-            name="Category", value=category.name if category else "*not set*", inline=True
-        )
-        embed.add_field(
-            name="Mod log",
-            value=modlog_channel.mention if modlog_channel else "*not set*",
-            inline=True,
-        )
-        await ctx.send(embed=embed)
+
+        await ctx.send(embed=QuarantineEmbeds.settings_quarantine_settings(
+            color=await ctx.embed_colour(),
+            role=role,
+            category=category,
+        ))
 
     # ------------------------------------------------------------------
     # Moderator commands
@@ -496,7 +480,7 @@ class Quarantine(commands.Cog):
             channel = await category.create_text_channel(
                 f"{self._slugify(member.display_name)}-discussion",
                 overwrites=overwrites,
-                reason=f"Quarantine: {ctx.author}",
+                reason=f"Quarantine of {member} by {ctx.author}.",
             )
         except (discord.Forbidden, discord.HTTPException) as error:
             await ctx.send(
@@ -518,17 +502,11 @@ class Quarantine(commands.Cog):
             }
         )
 
-        embed = discord.Embed(
-            title="Quarantined",
-            description=reason or "*No reason given.*",
-            colour=LOG_COLOUR,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Quarantined by", value=ctx.author.mention)
         await asyncio.gather(
-            channel.send(content=f"{member.mention} {ctx.author.mention}", embed=embed),
+            channel.send(content=f"|| {member.mention} {ctx.author.mention} ||", embed=QuarantineEmbeds.discussion_channel_member_quarantined(moderator=ctx.author, reason=reason)),
             ctx.send(f"{member.mention} has been quarantined. See {channel.mention}.", ephemeral=True)
         )
+
         self._fire_and_forget(
             self._modlog(
                 ctx.guild,
@@ -573,15 +551,53 @@ class Quarantine(commands.Cog):
         message = f"{member.mention} has been unquarantined."
         if skipped:
             message += f"\n\nCouldn't restore: {humanize_list(skipped)}."
+
         await ctx.send(message, ephemeral=True)
 
-        self._fire_and_forget(self._archive_and_cleanup(ctx.guild, member.id, state, "unquarantined"))
-        self._fire_and_forget(
-            self._modlog(
-                ctx.guild,
-                title="Member unquarantined",
-                description=f"{member} ({member.id}) unquarantined by {ctx.author}.",
-                colour=UNQUARANTINE_COLOUR,
-            )
-        )
+        channel = ctx.guild.get_channel(state["channel_id"]) if state["channel_id"] else None
 
+        try:
+            await channel.send(embed=QuarantineEmbeds.discussion_channel_quarantine_lifted(member=member), view=QuarantineLiftedChannelPanel(self))
+        except discord.HTTPException:
+            log.exception("Failed to send quarantine lifted embed to quarantine discussion channel.")
+
+    async def handle_panel_click_delete_channel(self, interaction: discord.Interaction) -> None:
+        """If a moderator or an admin clicked the delete channel button after unquarantine, nuke the channel from orbit."""
+        member = interaction.user
+        guild = interaction.guild
+        channel_id = interaction.channel_id
+
+        if guild is None or not isinstance(member, discord.Member) or channel_id is None:
+            return
+
+        is_mod = False
+
+        for mod_role in (await self.bot.get_admin_roles(guild)) + (
+                await self.bot.get_mod_roles(guild)
+        ):
+            if member.get_role(mod_role.id) is not None:
+                is_mod = True
+                break
+
+        if not is_mod:
+            log.warning(f"Non moderator member {member.id} attempted to delete quarantine discussion channel {channel_id}.")
+            return
+
+        channel = interaction.channel
+
+        if channel is None:
+            return
+
+        await channel.send(embed=QuarantineEmbeds.discussion_channel_deletion_pending())
+
+        try:
+            await channel.delete(f"Moderator {member.id} initiated deletion of quarantine discussion channel.")
+        except discord.HTTPException:
+            log.exception("Failed to delete quarantine discussion channel.")
+
+        await ModLog.send_embed(
+            guild=guild,
+            embed=QuarantineEmbeds.modlog_discussion_channel_deleted(
+                channel=channel,
+                moderator=interaction.user)
+        )
