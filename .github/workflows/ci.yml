@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  vendoring:
+    name: common/ vendoring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # No dependencies needed: the script only reads and compares files.
+      - name: Check vendored copies are current
+        run: python tools/sync_common.py --check
+
+  compile:
+    name: Byte-compile cogs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile every cog
+        run: python -m compileall -q common tools modlog moderation quarantine verification topics

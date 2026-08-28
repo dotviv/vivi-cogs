@@ -16,7 +16,7 @@ from redbot.core.commands import Context
 from redbot.core.data_manager import cog_data_path
 from typing_extensions import List
 
-from common.interactions import ConfirmationView, Interactions, PageEmbedProvider
+from ._common.interactions import ConfirmationView, Interactions, PageEmbedProvider
 
 log = logging.getLogger("red.vivi-cogs.scarlettmod.modlog")
 
