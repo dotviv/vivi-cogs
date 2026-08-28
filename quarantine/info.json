@@ -1,0 +1,15 @@
+{
+    "author": ["vivirancy"],
+    "name": "quarantine",
+    "install_msg": "Thank you for installing quarantine!\nRun `[p]quarantineset` to begin.",
+    "short": "Quarantine members and talk to them in a private channel.",
+    "description": "Quarantine members and talk to them in a private channel. A quarantined member loses access to all channels except a new private conversation channel where they can talk to mods. Quarantined chats are archived after the quarantine is lifted and attached to the modlog case. Modlog transcripts require vivi-cogs/ModLog.",
+    "tags": [
+        "moderation",
+        "quarantine"
+    ],
+    "requirements": [],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "end_user_data_statement": "This cog stores the ID and message history of members within it's quarantined chats archive, both locally on disk and uploads to the modlog channel."
+}

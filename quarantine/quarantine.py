@@ -12,8 +12,8 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
-from .common.interactions import Interactions
-from .common.roles import Roles
+from common.interactions import Interactions
+from common.roles import Roles
 from modlog.modlog import ModLog
 
 log = logging.getLogger("red.vivi-cogs.scarlettmod.quarantine")
