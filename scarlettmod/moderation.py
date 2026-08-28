@@ -10,7 +10,7 @@ from modlog.modlog import ModLog
 
 class Moderation(commands.Cog):
 
-    __author__ = "dotviv"
+    __author__ = "vivirancy"
     __version__ = "1.0.0"
 
     def __init__(self, bot: Red) -> None:

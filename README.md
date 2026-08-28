@@ -1,6 +1,6 @@
 # vivi-cogs
 
-Cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3, by **dotviv**.
+Cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3, by **vivirancy**.
 
 ## Installation
 
@@ -8,7 +8,7 @@ Replace `[p]` with your bot's prefix.
 
 ```
 [p]load downloader
-[p]repo add vivi-cogs https://github.com/dotviv/vivi-cogs
+[p]repo add vivi-cogs https://github.com/vivirancy/vivi-cogs
 [p]cog install vivi-cogs verification
 [p]load verification
 ```

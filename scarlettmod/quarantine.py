@@ -46,7 +46,7 @@ BOT_ACCESS = discord.PermissionOverwrite(
 class Quarantine(commands.Cog):
     """Strip a member's roles and channel access, and give mods a private room to talk to them."""
 
-    __author__ = "dotviv"
+    __author__ = "vivirancy"
     __version__ = "1.0.0"
 
     DEFAULT_GUILD = {

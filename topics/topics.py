@@ -33,7 +33,7 @@ NO_MENTIONS = discord.AllowedMentions.none()
 class Topics(commands.Cog):
     """Hand out conversation starters, and let anyone ask to change the subject."""
 
-    __author__ = "dotviv"
+    __author__ = "vivirancy"
     __version__ = "1.0.0"
 
     DEFAULT_GUILD = {
