@@ -1,0 +1,16 @@
+{
+    "author": ["dotviv"],
+    "name": "Scarlett-Mod",
+    "install_msg": "Thank you for installing Scarlett Mod!\nRun `[p]scmodset` to begin.",
+    "short": "Quarantine, ban, warn, manage notes, purge messages, and more!",
+    "description": "Quarantine, ban, warn, manage notes, purge messages, manage modlog entries, uniformed logging, and better moderation feedback/responses including automated logs (records) bound to each member.",
+    "tags": [
+        "moderation",
+        "quarantine",
+        "modlog"
+    ],
+    "requirements": [],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "end_user_data_statement": "This cog stores the Discord user ID, role assignment, message transcripts, and moderation history for any affected members."
+}

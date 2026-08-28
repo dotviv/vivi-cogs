@@ -1,0 +1,17 @@
+{
+    "author": ["dotviv"],
+    "name": "Topics",
+    "install_msg": "Thank you for installing Topics!\nRun `[p]topicset modlog #your-staff-channel` so moderators can follow up on change requests, then `[p]topicset settings` to review everything.\n\nFor `changetopic` to be genuinely anonymous, the bot owner should enable slash commands: `[p]slash enablecog Topics` followed by `[p]slash sync`.",
+    "short": "Suggest conversation topics, and let anyone anonymously ask to change the subject.",
+    "description": "Hands out random conversation starters from a built-in list plus anything you add yourself. Members can anonymously ask the channel to move on to something else, with an optional note attached; the channel sees only that someone asked, while moderators get a private log naming the requester and linking to the conversation.",
+    "tags": [
+        "chat",
+        "topic",
+        "conversation",
+        "anonymous",
+        "moderation"
+    ],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "end_user_data_statement": "This cog stores the Discord user ID and a timestamp for each member who requests a topic change, solely to enforce the per-member cooldown. That record is deleted on a data deletion request. Separately, when a moderator log channel is configured, each request is posted there naming the member who made it; those messages are part of the server's own message history and are retained according to that channel, outside this cog's control."
+}
