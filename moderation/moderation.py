@@ -6,46 +6,55 @@ import discord
 from redbot.core import commands
 from redbot.core.bot import Red
 
-from modlog.modlog import ModLog
+from ._common.modlog_proxy import CaseRef, ModLogProxy
+
+
+def audit_reason(case: CaseRef | None, reason: str | None) -> str:
+    """The reason recorded in Discord's own audit log.
+
+    The case number is only available when something actually recorded the
+    case, so it is included opportunistically rather than assumed.
+    """
+    detail = reason or "No reason provided."
+
+    if case is None or case.case_number is None:
+        return detail
+
+    return f"Modlog case {case.case_number}: {detail}"
+
 
 class Moderation(commands.Cog):
 
     __author__ = "vivirancy"
     __version__ = "1.0.0"
 
+    # Declared as plain data rather than ModLog.ActionType instances. ModLog owns
+    # that class, and importing it here would reintroduce the cross-cog import
+    # this restructure exists to remove. The proxy pushes these to ModLog when it
+    # is loaded, and mirrors them into Red's core modlog for the fallback path.
+    ACTION_TYPES = (
+        {"type": "warn", "name": "Warning", "color": discord.Colour.yellow(), "emoji": "⚠️"},
+        {"type": "kick", "name": "Kick", "color": discord.Colour.yellow(), "emoji": "🦶"},
+        {"type": "tempban", "name": "Temporary Ban", "color": discord.Colour.red(), "emoji": "🔨"},
+        {"type": "ban", "name": "Ban", "color": discord.Colour.red(), "emoji": "🔨"},
+        {"type": "unban", "name": "Unban", "color": discord.Colour.green(), "emoji": "🔨"},
+    )
+
     def __init__(self, bot: Red) -> None:
         self.bot = bot
         self._background_tasks: set[asyncio.Task] = set()
+        self.modlog = ModLogProxy(self, action_types=self.ACTION_TYPES)
 
-        ModLog.register_action_type(ModLog.ActionType(
-            type="warn",
-            name="Warning",
-            color=discord.Colour.yellow(),
-            emoji="⚠️"))
+    async def cog_load(self) -> None:
+        await self.modlog.refresh()
 
-        ModLog.register_action_type(ModLog.ActionType(
-            type="kick",
-            name="Kick",
-            color=discord.Colour.yellow(),
-            emoji="🦶"))
+    @commands.Cog.listener()
+    async def on_cog_add(self, cog: commands.Cog) -> None:
+        await self.modlog.on_cog_add(cog)
 
-        ModLog.register_action_type(ModLog.ActionType(
-            type="tempban",
-            name="Temporary Ban",
-            color=discord.Colour.red(),
-            emoji="🔨"))
-
-        ModLog.register_action_type(ModLog.ActionType(
-            type="ban",
-            name="Ban",
-            color=discord.Colour.red(),
-            emoji="🔨"))
-
-        ModLog.register_action_type(ModLog.ActionType(
-            type="unban",
-            name="Unban",
-            color=discord.Colour.green(),
-            emoji="🔨"))
+    ### ----------------------------------------------------------------
+    ### Commands
+    ### ----------------------------------------------------------------
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
@@ -58,7 +67,7 @@ class Moderation(commands.Cog):
         if not guild:
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             target=target,
             action_type="warn",
@@ -68,15 +77,14 @@ class Moderation(commands.Cog):
         if not confirmation:
             return
 
-        case = await ModLog.create_case(
-            bot=self.bot,
-            guild=guild,
+        case = await self.modlog.create_case(
+            guild,
             action_type="warn",
             target=target,
             moderator=ctx.author,
             reason=reason)
 
-        await ModLog.send_case_action_summary(ctx, case, ephemeral=False) # Non-ephemeral, warnings need to surface so members can see their warnings.
+        await self.modlog.send_case_action_summary(ctx, case, ephemeral=False) # Non-ephemeral, warnings need to surface so members can see their warnings.
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
@@ -89,7 +97,7 @@ class Moderation(commands.Cog):
         if not guild:
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             target=target,
             action_type="kick",
@@ -99,21 +107,16 @@ class Moderation(commands.Cog):
         if not confirmation:
             return
 
-        case = await ModLog.create_case(
-            bot=self.bot,
-            guild=guild,
+        case = await self.modlog.create_case(
+            guild,
             action_type="kick",
             target=target,
             moderator=ctx.author,
             reason=reason)
 
-        if not case:
-            await ctx.send(f"Failed to kick {target.mention}.", ephemeral=True)
-            return
+        await guild.kick(target, reason=audit_reason(case, reason))
 
-        await guild.kick(target, reason=f"Modlog case {case.case_number}: {reason or 'No reason provided.'}")
-
-        await ModLog.send_case_action_summary(ctx, case)
+        await self.modlog.send_case_action_summary(ctx, case)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
@@ -126,7 +129,7 @@ class Moderation(commands.Cog):
         if not guild:
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             target=target,
             action_type="ban",
@@ -136,21 +139,19 @@ class Moderation(commands.Cog):
         if not confirmation:
             return
 
-        case = await ModLog.create_case(
-            bot=self.bot,
-            guild=guild,
+        case = await self.modlog.create_case(
+            guild,
             action_type="ban",
             target=target,
             moderator=ctx.author,
             reason=reason)
 
-        if not case:
-            await ctx.send(f"Failed to ban {target.mention}.", ephemeral=True)
-            return
+        await guild.ban(
+            target,
+            reason=audit_reason(case, reason),
+            delete_message_seconds=delete_messages.total_seconds() if delete_messages else 0)
 
-        await guild.ban(target, reason=f"Modlog case {case.case_number}: {reason or 'No reason provided.'}", delete_message_seconds=delete_messages.total_seconds() if delete_messages else 0)
-
-        await ModLog.send_case_action_summary(ctx, case)
+        await self.modlog.send_case_action_summary(ctx, case)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
@@ -163,7 +164,7 @@ class Moderation(commands.Cog):
         if not guild:
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             target=target,
             action_type="unban",
@@ -179,18 +180,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"{target.mention} is not banned.", ephemeral=True)
             return
 
-        case = await ModLog.create_case(
-            bot=self.bot,
-            guild=guild,
+        case = await self.modlog.create_case(
+            guild,
             action_type="unban",
             target=target,
             moderator=ctx.author,
             reason=reason)
 
-        if not case:
-            await ctx.send(f"Failed to unban {target.mention}.", ephemeral=True)
-            return
+        await guild.unban(target, reason=audit_reason(case, reason))
 
-        await guild.unban(target, reason=f"Modlog case {case.case_number}: {reason or 'No reason provided.'}")
-
-        await ModLog.send_case_action_summary(ctx, case)
+        await self.modlog.send_case_action_summary(ctx, case)

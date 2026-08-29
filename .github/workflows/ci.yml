@@ -20,6 +20,36 @@ jobs:
       - name: Check vendored copies are current
         run: python tools/sync_common.py --check
 
+  manifests:
+    name: info.json manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate cog manifests
+        run: python tools/check_manifests.py
+
+  tests:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v
+
   compile:
     name: Byte-compile cogs
     runs-on: ubuntu-latest

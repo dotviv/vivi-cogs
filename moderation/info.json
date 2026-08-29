@@ -2,13 +2,13 @@
     "author": ["vivirancy"],
     "name": "moderation",
     "install_msg": "Thank you for installing moderation!",
-    "short": "Ban, kick, warn, with better action verification, connected to a better modlog.",
-    "description": "Back, kick, warn, with better action verification, connected to a better modlog (vivi-cogs/ModLog). All actions give proper verification / feedback so you can feel confident in your actions.",
+    "short": "Ban, kick, warn, with better action verification and modlog integration.",
+    "description": "Ban, kick, warn, with better action verification. All actions give proper verification / feedback so you can feel confident in your actions. Cases are recorded through vivi-cogs/ModLog when it is installed, and fall back to Red's core modlog when it is not.",
     "tags": [
         "moderation"
     ],
     "requirements": [],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 9, 0],
-    "end_user_data_statement": "This cog makes use of vivi-cogs/ModLog and as such, will store the ID of members in ModLog case entries."
+    "min_python_version": [3, 11, 0],
+    "end_user_data_statement": "This cog does not store any data itself. It records moderation cases through vivi-cogs/ModLog when that cog is installed, and through Red's core modlog otherwise; either way the ID of the member acted on is stored in that case entry and retained by whichever modlog recorded it."
 }

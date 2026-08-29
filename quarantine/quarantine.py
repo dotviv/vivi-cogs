@@ -13,10 +13,15 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 from ._common.interactions import Interactions
+from ._common.modlog_proxy import ModLogProxy
 from ._common.roles import Roles
-from modlog.modlog import ModLog
 
-log = logging.getLogger("red.vivi-cogs.scarlettmod.quarantine")
+log = logging.getLogger("red.vivi-cogs.quarantine")
+
+NO_TRANSCRIPT = (
+    "The quarantine transcript could not be attached to the case: Red's core modlog "
+    "cannot store attachments. Install vivi-cogs/ModLog to retain transcripts."
+)
 
 DENY_ACCESS = discord.PermissionOverwrite(view_channel=False)
 QUARANTINED_ACCESS = discord.PermissionOverwrite(
@@ -59,26 +64,28 @@ class Quarantine(commands.Cog):
         "removed_role_ids": []
     }
 
+    # Declared as plain data rather than ModLog.ActionType instances. ModLog owns
+    # that class, and importing it here would reintroduce the cross-cog import
+    # this restructure exists to remove.
+    ACTION_TYPES = (
+        {"type": "quarantine", "name": "Quarantine", "color": discord.Color.yellow(), "emoji": "🔒"},
+        {"type": "unquarantine", "name": "Unquarantine", "color": discord.Color.green(), "emoji": "🔓"},
+    )
+
     def __init__(self, bot: Red) -> None:
         self.bot = bot
         self.config = Config.get_conf(self, identifier=12312389892, force_registration=True)
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
         self._background_tasks: set[asyncio.Task] = set()
+        self.modlog = ModLogProxy(self, action_types=self.ACTION_TYPES)
 
-        ModLog.register_action_type(ModLog.ActionType(
-            type="quarantine",
-            name="Quarantine",
-            color=discord.Color.yellow(),
-            emoji="🔒"
-        ))
+    async def cog_load(self) -> None:
+        await self.modlog.refresh()
 
-        ModLog.register_action_type(ModLog.ActionType(
-            type="unquarantine",
-            name="Unquarantine",
-            color=discord.Color.green(),
-            emoji="🔓"
-        ))
+    @commands.Cog.listener()
+    async def on_cog_add(self, cog: commands.Cog) -> None:
+        await self.modlog.on_cog_add(cog)
 
     ### ----------------------------------------------------------------
     ### Utilities
@@ -299,7 +306,7 @@ class Quarantine(commands.Cog):
 
         return path
 
-    async def _unquarantine_and_cleanup(self, guild: discord.Guild, target_state: Dict, target: Member | User | int, moderator: Member | User, reason: str | None, audit_reason: str) -> ModLog.Case | None:
+    async def _unquarantine_and_cleanup(self, guild: discord.Guild, target_state: Dict, target: Member | User | int, moderator: Member | User, reason: str | None, audit_reason: str):
         """Shared by unquarantine and the on_member_remove/on_member_ban listeners."""
 
         guild_state = await self.config.guild(guild).all()
@@ -348,9 +355,8 @@ class Quarantine(commands.Cog):
 
         attachments = [transcript_path] if transcript_path else None
 
-        return await ModLog.create_case(
-            bot=self.bot,
-            guild=guild,
+        return await self.modlog.create_case(
+            guild,
             action_type="unquarantine",
             moderator=moderator,
             target=target_member or target,
@@ -446,7 +452,7 @@ class Quarantine(commands.Cog):
             await ctx.send(f"I need the **Manage Channels** permission on **{quarantine_category.name}** to quarantine members.", ephemeral=True)
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             action_type="quarantine",
             reason=reason,
@@ -500,15 +506,14 @@ class Quarantine(commands.Cog):
         await discussion_channel.send(f"|| {member.mention} {ctx.author.mention} ||", embed=embed)
         await member.remove_roles(*removable_roles, reason=audit_reason)
         await member.add_roles(quarantine_role, reason=audit_reason)
-        case = await ModLog.create_case(
-            bot=self.bot,
+        case = await self.modlog.create_case(
+            guild,
             action_type="quarantine",
-            guild=guild,
             moderator=ctx.author,
             target=member,
             reason=reason)
 
-        await ModLog.send_case_action_summary(
+        await self.modlog.send_case_action_summary(
             ctx,
             case,
             note=f"{discussion_channel.mention} has been created.",
@@ -537,7 +542,7 @@ class Quarantine(commands.Cog):
             await ctx.send("Member is not quarantined.", ephemeral=True)
             return
 
-        confirmation = await ModLog.confirm_action(
+        confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             action_type="unquarantine",
             reason=reason,
@@ -551,7 +556,11 @@ class Quarantine(commands.Cog):
 
         case = await self._unquarantine_and_cleanup(guild=guild, target_state=member_state, target=member, moderator=ctx.author, reason=reason, audit_reason=audit_reason)
 
-        await ModLog.send_case_action_summary(ctx, case, ephemeral=False)
+        # The transcript is written to disk either way, but only ModLog can
+        # attach it to the case. Say so rather than letting it vanish quietly.
+        note = None if self.modlog.supports_attachments else NO_TRANSCRIPT
+
+        await self.modlog.send_case_action_summary(ctx, case, note=note, ephemeral=False)
 
 
 

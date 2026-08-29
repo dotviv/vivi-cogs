@@ -1,9 +1,9 @@
 {
     "author": ["vivirancy"],
     "name": "Topics",
-    "install_msg": "Thank you for installing Topics!\nRun `[p]topicset modlog #your-staff-channel` so moderators can follow up on change requests, then `[p]topicset settings` to review everything.\n\nFor `changetopic` to be genuinely anonymous, the bot owner should enable slash commands: `[p]slash enablecog Topics` followed by `[p]slash sync`.",
+    "install_msg": "Thank you for installing Topics!\nInstall and load vivi-cogs/ModLog so moderators can follow up on change requests — Red's core modlog is deliberately not used here, because its case lookups are readable by any member and would undo the anonymity. Then run `[p]topicset settings` to review everything.\n\nFor `changetopic` to be genuinely anonymous, the bot owner should enable slash commands: `[p]slash enablecog Topics` followed by `[p]slash sync`.",
     "short": "Suggest conversation topics, and let anyone anonymously ask to change the subject.",
-    "description": "Hands out random conversation starters from a built-in list plus anything you add yourself. Members can anonymously ask the channel to move on to something else, with an optional note attached; the channel sees only that someone asked, while moderators get a private log naming the requester and linking to the conversation.",
+    "description": "Hands out random conversation starters from a built-in list plus anything you add yourself. Members can anonymously ask the channel to move on to something else, with an optional note attached; the channel sees only that someone asked, while the modlog case names the requester and links to the conversation. Requires vivi-cogs/ModLog to record requests.",
     "tags": [
         "chat",
         "topic",
@@ -12,6 +12,6 @@
         "moderation"
     ],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 9, 0],
-    "end_user_data_statement": "This cog stores the Discord user ID and a timestamp for each member who requests a topic change, solely to enforce the per-member cooldown. That record is deleted on a data deletion request. Separately, when a moderator log channel is configured, each request is posted there naming the member who made it; those messages are part of the server's own message history and are retained according to that channel, outside this cog's control."
+    "min_python_version": [3, 11, 0],
+    "end_user_data_statement": "This cog stores the Discord user ID and a timestamp for each member who requests a topic change, solely to enforce the per-member cooldown. That record is deleted on a data deletion request. Separately, each request is recorded as a modlog case naming the member who made it, along with the channel and a link to the conversation. That case is stored by vivi-cogs/ModLog and retained there; requests are not recorded at all if that cog is not installed."
 }

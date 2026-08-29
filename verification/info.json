@@ -13,6 +13,6 @@
     ],
     "requirements": ["pillow"],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 9, 0],
-    "end_user_data_statement": "This cog temporarily stores the Discord user ID, a generated verification code, an attempt count, an expiry timestamp, and a lockout flag for members currently undergoing verification. This data is deleted when verification completes, when a moderator resets the member, or when the member leaves the server. If a mod-log channel is configured, verification outcomes are also posted there and retained according to that channel's own history."
+    "min_python_version": [3, 11, 0],
+    "end_user_data_statement": "This cog temporarily stores the Discord user ID, a generated verification code, an attempt count, an expiry timestamp, and a lockout flag for members currently undergoing verification. This data is deleted when verification completes, when a moderator resets the member, or when the member leaves the server. Separately, every verification outcome (passed, failed attempt, expired, locked out) is recorded as a modlog case naming the member, through vivi-cogs/ModLog when installed and Red's core modlog otherwise. Those cases are retained by whichever modlog recorded them and are not removed when the member leaves."
 }

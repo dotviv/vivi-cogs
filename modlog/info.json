@@ -1,7 +1,7 @@
 {
     "author": ["vivirancy"],
     "name": "modlog",
-    "install_msg": "Thank you for installing modlog!\nRun `[p]modset` to begin.",
+    "install_msg": "Thank you for installing modlog!\nCases are posted to the channel set with `[p]modlogset modlog`; they are recorded either way, so that is optional.\nOther vivi-cogs use this automatically once it is loaded.",
     "short": "Better log summaries, case recall, user case lookup, attachments, and more!",
     "description": "A drop-in modlog replacement for the red core modlog allowing for better log summaries, case recall, user case lookup, attachments (such as transcripts) and more!",
     "tags": [
@@ -10,6 +10,6 @@
     ],
     "requirements": [],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 9, 0],
+    "min_python_version": [3, 11, 0],
     "end_user_data_statement": "This cog stores the ID of members within modlog cases for historic lookup. Modlog attachments may or may not contain additional user data depending on the data stored within the attachment."
 }

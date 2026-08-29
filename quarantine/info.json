@@ -10,6 +10,6 @@
     ],
     "requirements": [],
     "min_bot_version": "3.5.0",
-    "min_python_version": [3, 9, 0],
-    "end_user_data_statement": "This cog stores the ID and message history of members within it's quarantined chats archive, both locally on disk and uploads to the modlog channel."
+    "min_python_version": [3, 11, 0],
+    "end_user_data_statement": "This cog stores the ID and message history of members within its quarantined chats archive on disk. When vivi-cogs/ModLog is installed the transcript is also attached to the modlog case and uploaded to the modlog channel; Red's core modlog cannot store attachments, so on that fallback the transcript stays on disk only."
 }

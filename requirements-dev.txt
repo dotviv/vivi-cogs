@@ -1,0 +1,11 @@
+# Dependencies for running the test suite. The cogs themselves declare their
+# runtime requirements in each info.json; Downloader installs those.
+#
+#   pip install -r requirements-dev.txt
+#   python -m unittest discover -s tests -t .
+#
+# The suite uses stdlib unittest (IsolatedAsyncioTestCase), so there is no test
+# framework to install -- only what the cogs import.
+
+Red-DiscordBot>=3.5.0,<3.6
+pillow

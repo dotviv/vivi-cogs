@@ -13,6 +13,7 @@ from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import humanize_list
 
 from . import captcha
+from ._common.modlog_proxy import ModLogProxy
 from .views import CaptchaPrompt, VerificationPanel
 
 log = logging.getLogger("red.vivi-cogs.verification")
@@ -30,11 +31,24 @@ class Verification(commands.Cog):
     __author__ = "vivirancy"
     __version__ = "1.2.0"
 
+    # Every verification outcome is a real case, not a passing notice: the modlog
+    # is a member's moderation and security history, and how someone got through
+    # the door is part of that. The bot is the moderator on all of them.
+    ACTION_TYPES = (
+        {"type": "verification_pass", "name": "Verification Passed",
+         "color": PASS_COLOUR, "emoji": "✅"},
+        {"type": "verification_failed", "name": "Verification Failed",
+         "color": FAIL_COLOUR, "emoji": "❌"},
+        {"type": "verification_expired", "name": "Verification Expired",
+         "color": FAIL_COLOUR, "emoji": "⏰"},
+        {"type": "verification_lockout", "name": "Verification Lockout",
+         "color": LOCKOUT_COLOUR, "emoji": "🚫"},
+    )
+
     DEFAULT_GUILD = {
         "enabled": False,
         "channel_id": None,
         "panel_message_id": None,
-        "modlog_channel_id": None,
         "join_roles": [],
         "add_roles": [],
         "remove_roles": [],
@@ -57,6 +71,7 @@ class Verification(commands.Cog):
         self.config = Config.get_conf(self, identifier=1357924680, force_registration=True)
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
+        self.modlog = ModLogProxy(self, action_types=self.ACTION_TYPES)
         self._sweep_expired.start()
 
     async def cog_load(self) -> None:
@@ -64,6 +79,11 @@ class Verification(commands.Cog):
         # Handlers are keyed by custom_id, so a cog reload overwrites rather
         # than stacking duplicates.
         self.bot.add_view(VerificationPanel(self))
+        await self.modlog.refresh()
+
+    @commands.Cog.listener()
+    async def on_cog_add(self, cog: commands.Cog) -> None:
+        await self.modlog.on_cog_add(cog)
 
     def cog_unload(self) -> None:
         self._sweep_expired.cancel()
@@ -139,32 +159,19 @@ class Verification(commands.Cog):
     # Mod log
     # ------------------------------------------------------------------
 
-    async def _modlog(
-        self,
-        member: discord.Member,
-        *,
-        title: str,
-        description: str,
-        colour: discord.Colour,
-    ) -> None:
-        """Post a verification event to the mod-log channel, if one is set."""
-        channel_id = await self.config.guild(member.guild).modlog_channel_id()
-        if not channel_id:
-            return
-        channel = member.guild.get_channel(channel_id)
-        if channel is None:
-            return
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            colour=colour,
-            timestamp=discord.utils.utcnow(),
+    async def _record(self, member: discord.Member, *, action_type: str, reason: str) -> None:
+        """Record a verification outcome as a modlog case.
+
+        The bot is the moderator: nobody took this action by hand. The reason
+        carries the detail, since the case already names the target.
+        """
+        await self.modlog.create_case(
+            member.guild,
+            action_type=action_type,
+            target=member,
+            moderator=member.guild.me,
+            reason=reason,
         )
-        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
-        try:
-            await channel.send(embed=embed)
-        except (discord.Forbidden, discord.HTTPException):
-            log.warning("Could not write to the mod-log channel in guild %s.", member.guild.id)
 
     # ------------------------------------------------------------------
     # Outcomes
@@ -178,11 +185,10 @@ class Verification(commands.Cog):
             reason="Verification: captcha solved",
         )
         await self.config.member(member).clear()
-        await self._modlog(
+        await self._record(
             member,
-            title="Verification passed",
-            description=f"{member.mention} solved the captcha.",
-            colour=PASS_COLOUR,
+            action_type="verification_pass",
+            reason="Solved the captcha.",
         )
 
     async def _lock_out(self, member: discord.Member, conf: dict, reason: str) -> None:
@@ -195,11 +201,10 @@ class Verification(commands.Cog):
         await self.config.member(member).set(
             {"code": None, "attempts": 0, "expires_at": None, "locked_out": True}
         )
-        await self._modlog(
+        await self._record(
             member,
-            title="Verification locked out",
-            description=f"{member.mention} {reason}.",
-            colour=LOCKOUT_COLOUR,
+            action_type="verification_lockout",
+            reason=f"Locked out: {reason}.",
         )
         if conf["on_failure"] != "kick":
             return
@@ -224,11 +229,10 @@ class Verification(commands.Cog):
         """
         await self.config.member(member).code.set(None)
         await self.config.member(member).expires_at.set(None)
-        await self._modlog(
+        await self._record(
             member,
-            title="Verification expired",
-            description=f"{member.mention} did not finish in time. No action taken.",
-            colour=FAIL_COLOUR,
+            action_type="verification_expired",
+            reason="Did not finish in time. No action taken.",
         )
 
     # ------------------------------------------------------------------
@@ -312,11 +316,10 @@ class Verification(commands.Cog):
             )
             return
 
-        await self._modlog(
+        await self._record(
             member,
-            title="Verification attempt failed",
-            description=f"{member.mention} submitted an incorrect code. {remaining} left.",
-            colour=FAIL_COLOUR,
+            action_type="verification_failed",
+            reason=f"Submitted an incorrect code. {remaining} attempt(s) remaining.",
         )
         # Burn the failed code and issue a fresh one.
         await self._send_captcha(
@@ -505,18 +508,6 @@ class Verification(commands.Cog):
                 "closes the last public surface in the channel."
             )
 
-    @verifyset.command(name="modlog")
-    async def verifyset_modlog(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
-    ) -> None:
-        """Set a channel for verification events. Omit the channel to turn it off."""
-        if channel is None:
-            await self.config.guild(ctx.guild).modlog_channel_id.set(None)
-            await ctx.send("Verification logging disabled.")
-            return
-        await self.config.guild(ctx.guild).modlog_channel_id.set(channel.id)
-        await ctx.send(f"Verification events will be logged to {channel.mention}.")
-
     async def _modify_role_list(
         self, ctx: commands.Context, key: str, role: discord.Role, *, adding: bool
     ) -> None:
@@ -697,7 +688,7 @@ class Verification(commands.Cog):
         embed.add_field(name="Timeout", value=f"{conf['timeout']}s", inline=True)
         embed.add_field(name="On failure", value=f"`{conf['on_failure']}`", inline=True)
         embed.add_field(
-            name="Mod log", value=render_channel(conf["modlog_channel_id"]), inline=True
+            name="Mod log", value="Modlog cases (`[p]modlogset modlog`)", inline=True
         )
         await ctx.send(embed=embed)
 

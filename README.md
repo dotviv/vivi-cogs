@@ -31,7 +31,6 @@ The cog ships **disabled**. Configure it first, then turn it on:
 [p]verifyset joinrole add @Unverified      # applied when someone joins
 [p]verifyset removerole add @Unverified    # stripped once they pass
 [p]verifyset addrole add @Member           # granted once they pass
-[p]verifyset modlog #staff-log             # optional: log outcomes
 [p]verifyset panel                         # post the Verify button
 [p]verifyset settings                      # review everything
 [p]verifyset toggle                        # enable
@@ -90,7 +89,8 @@ The cog works the moment it loads, with 60 built-in conversation starters. Two t
 are worth doing straight away:
 
 ```
-[p]topicset modlog #staff-log     # so moderators can follow up on change requests
+[p]cog install <repo> modlog      # required: requests are recorded as modlog cases
+[p]load modlog
 [p]topicset settings              # review everything
 ```
 
@@ -118,9 +118,9 @@ better a failed request than one with a name attached.
 1. Someone runs `/changetopic`, optionally with a note.
 2. The channel gets a nameless embed: *someone here would like to move on*, plus the
    note if there was one.
-3. The mod-log channel gets a separate embed naming the requester, quoting the note,
-   and linking straight to the public notice so a moderator can jump into the
-   conversation.
+3. A modlog case is opened naming the requester as its target, quoting the note, and
+   linking straight to the public notice so a moderator can jump into the
+   conversation. It shows up in `[p]cases @them` alongside everything else.
 4. The requester gets a private confirmation.
 
 That last confirmation is a DM when the prefix command is used, and `[p]topicset dm`
@@ -137,16 +137,18 @@ used to ping the server from behind the bot.
 
 ### Who can see what
 
-This is the part to get right. The mod-log channel is the *only* thing standing between
-a request and its author, so **lock it to your staff** — `[p]topicset modlog` warns you
-if `@everyone` can read the channel you pick.
+This is the part to get right. A request is anonymous **in the channel it was made in,
+and nowhere else** — the modlog case names the requester, because spotting someone
+leaning on the feature is the whole point of recording it.
 
-Requests are deliberately **not** written to Red's built-in modlog. Core's `[p]case`
-and `[p]casesfor` are readable by every member of the server, so anyone could have
-looked up who filed a request. A cog-owned channel puts that behind real permissions.
+Requests are deliberately **never** written to Red's built-in modlog. Core's `[p]case`
+and `[p]casesfor` carry no permission check, so any member could look up who filed a
+request. The ModLog cog gates `[p]case` and `[p]cases` behind mod permissions, which is
+why it is required here rather than optional.
 
-If no mod-log channel is set, requests still appear in the channel anonymously, but no
-one is told who made them and there is nothing to follow up on.
+If ModLog is not loaded, requests still appear in the channel anonymously, but nothing
+is recorded and no one is told who made them — Topics will not fall back to core rather
+than un-anonymise a requester.
 
 ### Topics
 
@@ -166,7 +168,6 @@ built-ins off with `[p]topicset defaults`.
 | `joinrole add\|remove <role>` | Roles applied the moment someone joins |
 | `addrole add\|remove <role>` | Roles granted once verification succeeds |
 | `removerole add\|remove <role>` | Roles stripped once verification succeeds |
-| `modlog [channel]` | Log outcomes to a channel; omit the channel to disable |
 | `attempts <1-10>` | Tries allowed before lockout |
 | `timeout <60-900>` | Seconds a captcha stays valid |
 | `length <4-10>` | Characters in the code |
@@ -201,11 +202,37 @@ Both are available as slash commands once the owner runs `[p]slash enablecog Top
 | `list` | Show the custom topics |
 | `clear` | Remove every custom topic |
 | `defaults` | Turn the 60 built-in topics on or off |
-| `modlog [channel]` | Log change requests to a channel; omit the channel to disable |
 | `cooldown <0-3600>` | Seconds a member must wait between requests; `0` disables |
 | `dm` | Whether to DM a member confirming their request went through (prefix only) |
 | `toggle` | Enable or disable `changetopic` |
 | `settings` | Show the current configuration |
+
+## Development
+
+Shared code lives in `common/` and is **vendored** into each cog as `_common/`.
+Red's Downloader installs one folder per cog and nothing else, so a top-level
+shared package would resolve in a checkout and vanish on a real install. Edit
+`common/`, never a `_common/` copy, then:
+
+```
+python tools/sync_common.py           # write the copies
+python tools/sync_common.py --check   # verify they are current (CI)
+python tools/check_manifests.py       # validate every info.json
+```
+
+Because every cog carries its own copy, classes from `_common` must never be
+passed between cogs — two cogs' copies are unrelated types at runtime. Cross-cog
+calls go through `bot.get_cog(...)` and primitives; see `common/modlog_proxy.py`.
+
+### Tests
+
+```
+pip install -r requirements-dev.txt
+python -m unittest discover -s tests -t .
+```
+
+Stdlib `unittest` only — no test framework to install. The suite runs against
+fakes rather than a live bot, so it needs no Discord connection.
 
 ## License
 

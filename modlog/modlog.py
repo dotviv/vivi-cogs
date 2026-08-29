@@ -6,7 +6,7 @@ import logging
 import shutil
 from math import ceil
 from pathlib import Path
-from sqlite3 import NotSupportedError
+from typing import Dict, List
 
 import discord
 from discord import Colour, Member, User, Guild
@@ -14,11 +14,21 @@ from redbot.core import Config, modlog, commands
 from redbot.core.bot import Red
 from redbot.core.commands import Context
 from redbot.core.data_manager import cog_data_path
-from typing_extensions import List
 
-from ._common.interactions import ConfirmationView, Interactions, PageEmbedProvider
+from ._common.interactions import Interactions, PageEmbedProvider
+from ._common.modlog_render import build_case_embed
 
-log = logging.getLogger("red.vivi-cogs.scarlettmod.modlog")
+log = logging.getLogger("red.vivi-cogs.modlog")
+
+
+class UnknownActionType(Exception):
+    """Raised when a case is requested for an action type nobody registered.
+
+    Registration lives with the cog that owns the action, so this generally
+    means that cog either failed to load or has not replayed its registrations
+    since ModLog was last reloaded.
+    """
+
 
 class ModLog(commands.Cog):
     class ActionType:
@@ -36,7 +46,7 @@ class ModLog(commands.Cog):
     class Case:
         action_type: ModLog.ActionType
         case_number: int
-        moderator: Member | User | int
+        moderator: Member | User | int | None
         target: Member | User | int
         reason: str
         channel_id: int | None
@@ -45,7 +55,20 @@ class ModLog(commands.Cog):
         duration: str | None
         attachments: List[Path]
 
-        def __init__(self, *, action_type: ModLog.ActionType, case_number: int, moderator: Member | User, target: Member | User | int, reason: str, timestamp: float, duration: str | None, attachments: List[Path] | None = None):
+        def __init__(
+            self,
+            *,
+            action_type: ModLog.ActionType,
+            case_number: int,
+            moderator: Member | User | int | None,
+            target: Member | User | int,
+            reason: str,
+            timestamp: float,
+            duration: str | None,
+            attachments: List[Path] | None = None,
+            channel_id: int | None = None,
+            message_id: int | None = None,
+        ):
             self.action_type = action_type
             self.case_number = case_number
             self.moderator = moderator
@@ -55,8 +78,25 @@ class ModLog(commands.Cog):
             self.duration = duration
             self.attachments = attachments or []
 
+            # These stay None until the case is posted, and stay None forever if
+            # the guild has no modlog channel. They must be assigned here rather
+            # than left as bare annotations -- to_dict reads them unconditionally.
+            self.channel_id = channel_id
+            self.message_id = message_id
+
+        @staticmethod
+        def _identifier(who: Member | User | int | None) -> int | None:
+            """Reduce a participant to a stored ID.
+
+            None is a legitimate moderator: nobody takes a topic-change request
+            by hand, and core modlog treats the moderator as optional too.
+            """
+            if who is None:
+                return None
+            return who if isinstance(who, int) else who.id
+
         def to_dict(self) -> dict:
-            d = {
+            return {
                 "action_type": self.action_type.type,
                 "case_number": self.case_number,
                 "reason": self.reason,
@@ -65,203 +105,183 @@ class ModLog(commands.Cog):
                 "timestamp": self.timestamp,
                 "duration": self.duration,
                 "attachments": [str(p) for p in self.attachments],
+                "moderator_id": self._identifier(self.moderator),
+                "target_id": self._identifier(self.target),
             }
 
-            if isinstance(self.moderator, int):
-                d["moderator_id"] = self.moderator
-            else:
-                d["moderator_id"] = self.moderator.id
-
-            if isinstance(self.target, int):
-                d["target_id"] = self.target
-            else:
-                d["target_id"] = self.target.id
-
-            return d
-
         @classmethod
-        def from_dict(cls, bot: discord.Client, guild: discord.Guild, data: dict) -> ModLog.Case:
+        def from_dict(
+            cls,
+            bot: Red,
+            guild: Guild,
+            data: dict,
+            action_types: Dict[str, ModLog.ActionType],
+        ) -> ModLog.Case:
+            """Rebuild a case from storage.
+
+            ``action_types`` is passed in rather than read off the class, so a
+            case can be rendered against whichever registry the caller holds.
+            """
             mod_id = data["moderator_id"]
             target_id = data["target_id"]
 
-            moderator = guild.get_member(mod_id) or bot.get_user(mod_id) or mod_id
+            if mod_id is None:
+                moderator = None
+            else:
+                moderator = guild.get_member(mod_id) or bot.get_user(mod_id) or mod_id
+
             target = guild.get_member(target_id) or bot.get_user(target_id) or target_id
 
-            if data["action_type"] in ModLog.ACTION_TYPES:
-                action_type = ModLog.ACTION_TYPES[data["action_type"]]
-            else:
-                raise commands.BadArgument("Unknown action type.")
+            if data["action_type"] not in action_types:
+                raise UnknownActionType(data["action_type"])
 
-            case = cls(
-                action_type=action_type,
+            return cls(
+                action_type=action_types[data["action_type"]],
                 case_number=data["case_number"],
                 moderator=moderator,
                 target=target,
                 reason=data["reason"],
-                timestamp=0.0,
-                duration=None,
-                attachments=[Path(s) for s in data["attachments"]] if "attachments" in data else [],
+                timestamp=data.get("timestamp", 0.0),
+                duration=data.get("duration"),
+                attachments=[Path(s) for s in data.get("attachments", [])],
+                channel_id=data.get("channel_id"),
+                message_id=data.get("message_id"),
             )
 
-            case.channel_id = data["channel_id"]
-            case.message_id = data["message_id"]
-
-            if "timestamp" in data:
-                case.timestamp = data["timestamp"]
-
-            if "duration" in data:
-                case.duration = data["duration"]
-
-            return case
-
     class CasePageEmbedProvider(PageEmbedProvider):
-
-        def __init__(self, bot: Red, guild: Guild, config: Config, ctx: Context, member: Member) -> None:
-            self.bot = bot
-            self.guild = guild
-            self.config = config
+        def __init__(self, cog: ModLog, ctx: Context, guild: Guild, member: Member) -> None:
+            self.cog = cog
             self.ctx = ctx
+            self.guild = guild
             self.member = member
             self.page_len = 10
-            self.member_cases = []
+            self.member_cases: List[int] = []
 
         async def setup(self) -> None:
-            user_case_data = await self.config.guild(self.guild).user_cases()
-            member_id_key = str(self.member.id)
-
-            if member_id_key in user_case_data:
-                self.member_cases = user_case_data[member_id_key]
-
-            pass
+            user_cases = self.cog.config.guild(self.guild).user_cases
+            self.member_cases = await user_cases.get_raw(str(self.member.id), default=[])
 
         async def provide(self, page: int) -> discord.Embed:
-            case_data = {}
             end = len(self.member_cases) - (page - 1) * self.page_len
             start = max(0, end - self.page_len)
             case_ids = self.member_cases[start:end]
 
-            for case_id in case_ids:
-                raw = await self.config.guild(self.guild).cases.get_raw(str(case_id), default=None)
-                if raw is not None:
-                    case_data[str(case_id)] = raw
-
+            cases = self.cog.config.guild(self.guild).cases
             content = ""
 
             for case_id in reversed(case_ids):
-                if str(case_id) not in case_data:
+                raw = await cases.get_raw(str(case_id), default=None)
+                if raw is None:
                     continue
+                try:
+                    case = self.cog.case_from_dict(self.guild, raw)
+                except UnknownActionType:
+                    # A case whose owning cog is currently unloaded still belongs
+                    # in the member's history; skipping it would silently hide it.
+                    content += f"`{raw['case_number']}` - `unknown action`\n"
+                    continue
+                emoji = case.action_type.emoji or ""
+                content += (
+                    f"`{case.case_number}` - {emoji}`{case.action_type.name}` "
+                    f"[<t:{int(case.timestamp)}:F>]\n"
+                )
 
-                case = ModLog.Case.from_dict(self.bot, self.guild, case_data[str(case_id)])
-                content += f"`{case.case_number}` - {case.action_type.emoji or ''}`{case.action_type.name}` [<t:{int(case.timestamp)}:F>]\n"
-
-            embed = discord.Embed(
+            return discord.Embed(
                 title=f"Case history for {self.member.name}",
                 description=content,
-                colour=await self.ctx.embed_color() or discord.Colour.blue())
-
-            return embed
+                colour=await self.ctx.embed_color() or discord.Colour.blue(),
+            )
 
         async def pages(self) -> int:
             cases = len(self.member_cases)
-
             return int(ceil(cases / self.page_len)) if cases > self.page_len else 1
-
 
     DEFAULT_GUILD = {
         "case_sequence": 1,
         "cases": {},
-        "user_cases": {}
+        "user_cases": {},
     }
 
-    DEFAULT_MEMBER = {
-    }
-
-    ACTION_TYPES={}
+    DEFAULT_MEMBER: dict = {}
 
     CONFIG_IDENTIFIER = 1244378783399
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=ModLog.CONFIG_IDENTIFIER, force_registration=True)
+        self.config = Config.get_conf(
+            self, identifier=ModLog.CONFIG_IDENTIFIER, force_registration=True
+        )
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
         self._background_tasks: set[asyncio.Task] = set()
 
+        # Instance state, not class state. Red reloads a cog by re-executing its
+        # module in place, which rebinds the class object -- anything kept on the
+        # class survives as a stale duplicate that the new instance cannot see.
+        # Owning cogs re-register on load and on ModLog's own load; see the proxy.
+        self._action_types: Dict[str, ModLog.ActionType] = {}
+
+    ### ----------------------------------------------------------------
+    ### Action type registration
+    ### ----------------------------------------------------------------
+
+    def register_action_type(
+        self, *, type: str, name: str, color: Colour, emoji: str | None = None
+    ) -> None:
+        """Register an action type this ModLog can create cases for.
+
+        Takes primitives rather than an ``ActionType`` instance on purpose: each
+        cog carries its own vendored copy of the shared helpers, so classes must
+        never cross a cog boundary. Re-registering the same type overwrites it,
+        which is what makes registration replay safe.
+        """
+        self._action_types[type] = ModLog.ActionType(
+            type=type, name=name, color=color, emoji=emoji
+        )
+
+    def action_type(self, action_type: str) -> ModLog.ActionType | None:
+        """Look up a registered action type, or None if nobody registered it."""
+        return self._action_types.get(action_type)
+
+    def case_from_dict(self, guild: Guild, data: dict) -> ModLog.Case:
+        """Rebuild a stored case against this instance's registry."""
+        return ModLog.Case.from_dict(self.bot, guild, data, self._action_types)
+
+    ### ----------------------------------------------------------------
+    ### Rendering
+    ### ----------------------------------------------------------------
+
+    @classmethod
+    def case_embed(cls, case: ModLog.Case, *, detailed: bool = False) -> discord.Embed:
+        """Render a case through the shared builder.
+
+        Consuming cogs render their moderator summaries with the same function
+        from their own vendored copy, so a case looks the same in the channel
+        and in the reply that follows the action.
+        """
+        return build_case_embed(
+            action_name=case.action_type.name,
+            action_color=case.action_type.color,
+            action_emoji=case.action_type.emoji,
+            case_number=case.case_number,
+            moderator=case.moderator,
+            target=case.target,
+            reason=case.reason,
+            timestamp=case.timestamp,
+            duration=case.duration,
+            detailed=detailed,
+        )
+
     ### ----------------------------------------------------------------
     ### Utilities
     ### ----------------------------------------------------------------
-
-    @staticmethod
-    async def _case_to_detailed_embed(case: ModLog.Case) -> discord.Embed:
-        embed = discord.Embed()
-
-        embed.colour = case.action_type.color
-
-        embed.timestamp = datetime.datetime.fromtimestamp(case.timestamp, tz=datetime.timezone.utc)
-
-        embed.add_field(name="Case:", value=f"`{case.case_number}`✅", inline=True)
-        embed.add_field(name="Type:", value=f"`{case.action_type.name}`{case.action_type.emoji or ''}", inline=True)
-
-        if isinstance(case.moderator, Member) or isinstance(case.moderator, User):
-            embed.add_field(name="Moderator:", value=f"`{case.moderator.name}`🛡", inline=False)
-            embed.add_field(name="Moderator ID:", value=f"`{case.moderator.id}`", inline=False)
-        else:
-            embed.add_field(name="Moderator:", value=f"`Unavailable`🛡", inline=False)
-            embed.add_field(name="Moderator ID:", value=f"`{case.moderator}`", inline=False)
-
-        if isinstance(case.target, Member) or isinstance(case.target, User):
-            embed.add_field(name="Target:", value=f"`{case.target.name}`🎯", inline=False)
-            embed.add_field(name="Target ID:", value=f"`{case.target.id}`", inline=False)
-            embed.set_thumbnail(url=case.target.display_avatar.url)
-        else:
-            embed.add_field(name="Target:", value=f"`Unavailable`🎯", inline=False)
-            embed.add_field(name="Target ID:", value=f"`{case.target}`", inline=False)
-
-        embed.add_field(name="Duration:", value=f"`{case.duration or 'Not specified.'}`⏳", inline=False)
-
-        embed.add_field(name="Reason:", value=case.reason, inline=False)
-
-        return embed
-
-    @staticmethod
-    async def _case_to_minimal_embed(case: ModLog.Case) -> discord.Embed:
-        embed = discord.Embed()
-
-        embed.colour = case.action_type.color
-
-        embed.timestamp = datetime.datetime.fromtimestamp(case.timestamp, tz=datetime.timezone.utc)
-
-        embed.add_field(name="Case:", value=f"`{case.case_number}`✅", inline=True)
-        embed.add_field(name="Type:", value=f"`{case.action_type.name}`{case.action_type.emoji or ''}", inline=True)
-
-        if isinstance(case.moderator, Member) or isinstance(case.moderator, User):
-            embed.add_field(name="Moderator:", value=f"`{case.moderator.name}`🛡", inline=True)
-        else:
-            embed.add_field(name="Moderator:", value=f"`{case.moderator}`🛡", inline=True)
-
-        if isinstance(case.target, Member) or isinstance(case.target, User):
-            embed.add_field(name="Target:", value=f"`{case.target.name}`🎯", inline=False)
-            embed.set_thumbnail(url=case.target.display_avatar.url)
-        else:
-            embed.add_field(name="Target:", value=f"`{case.target}`🎯", inline=False)
-
-        if case.duration:
-            embed.add_field(name="Duration:", value=f"`{case.duration}`⏳", inline=False)
-
-        embed.add_field(name="Reason:", value=case.reason, inline=False)
-
-        return embed
 
     def _attachment_dir(self, case_number: int) -> Path:
         directory = cog_data_path(self) / f"cases/{case_number}/attachments"
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
-    async def _archive_attachments(
-        self,
-        case: ModLog.Case,
-        attachments: List[Path],
-    ) -> None:
+    async def _archive_attachments(self, case: ModLog.Case, attachments: List[Path]) -> None:
         attachment_dir = self._attachment_dir(case_number=case.case_number)
 
         for file_path in attachments:
@@ -270,169 +290,124 @@ class ModLog(commands.Cog):
             if src.is_file():
                 shutil.copy2(src, attachment_dir)
             else:
-                log.warning(f"Attachment \"{file_path}\" could not be archived for case number {case.case_number}, the file could not be found.")
+                log.warning(
+                    f"Attachment \"{file_path}\" could not be archived for case number "
+                    f"{case.case_number}, the file could not be found."
+                )
+
+    async def _next_case_number(self, guild: Guild) -> int:
+        """Reserve the next case number.
+
+        Taken under the value's own lock: verification alone can fire several
+        cases in the same moment during a raid, and two of them being handed the
+        same number would overwrite one another in storage.
+        """
+        sequence = self.config.guild(guild).case_sequence
+
+        async with sequence.get_lock():
+            case_number = await sequence()
+            await sequence.set(case_number + 1)
+
+        return case_number
 
     ### ----------------------------------------------------------------
-    ### Action Type registration / Case creation
+    ### Case creation
     ### ----------------------------------------------------------------
 
-    @staticmethod
-    def register_action_type(action_type: ActionType):
-        """Registers an action type to the modlog."""
+    async def create_case(
+        self,
+        guild: Guild,
+        *,
+        action_type: str,
+        moderator: Member | User | int | None = None,
+        target: Member | User | int,
+        reason: str | None = None,
+        duration: str | None = None,
+        attachments: List[Path] | None = None,
+    ) -> ModLog.Case:
+        """Create, store, and post a modlog case."""
 
-        ModLog.ACTION_TYPES[action_type.type] = action_type
+        registered = self._action_types.get(action_type)
 
-    @staticmethod
-    async def create_case(bot: Red, guild: Guild, action_type: str, moderator: Member | User, target: Member | User | int, reason: str | None = None, duration: str | None = None, attachments: List[Path] | None = None) -> ModLog.Case | None:
-        """Creates and logs a new modlog case."""
+        if registered is None:
+            raise UnknownActionType(action_type)
 
-        if not action_type in ModLog.ACTION_TYPES:
-            raise NotSupportedError(f"Action type \"{action_type}\" has not been registered.")
-
-        action_type = ModLog.ACTION_TYPES[action_type]
-
-        config = Config.get_conf(cog_instance=None, cog_name="ModLog", identifier=ModLog.CONFIG_IDENTIFIER, force_registration=True)
-
+        target_id = ModLog.Case._identifier(target)
+        resolved_target = target
         if isinstance(target, int):
-            target_member_id = target
-            target_member = guild.get_member(target) or bot.get_user(target)
-        else:
-            target_member_id = target.id
-            target_member = target
+            resolved_target = guild.get_member(target) or self.bot.get_user(target) or target
 
-        async with config.guild(guild)() as guild_data:
-            case_number = guild_data["case_sequence"]
-            guild_data["case_sequence"] = case_number + 1
+        case_number = await self._next_case_number(guild)
 
         case = ModLog.Case(
-            action_type=action_type,
+            action_type=registered,
             case_number=case_number,
             moderator=moderator,
-            target=target_member or target_member_id,
-            reason=reason or f"Responsible moderator, use `[p]reason {case_number}` to set the reason for this case.",
+            target=resolved_target,
+            reason=reason
+            or f"Responsible moderator, use `[p]reason {case_number}` to set the reason for this case.",
             timestamp=datetime.datetime.now(datetime.timezone.utc).timestamp(),
             duration=duration,
-            attachments=attachments
+            attachments=attachments,
         )
 
-        embed = await ModLog._case_to_minimal_embed(case)
+        # Store before posting. A case is a record first and a message second --
+        # a missing or unwritable modlog channel must not lose the record.
+        #
+        # Both writes are scoped to a single key. Reading the whole guild group
+        # here would cost O(total cases) on every action, which verification
+        # traffic turns into a real problem.
+        await self.config.guild(guild).cases.set_raw(str(case_number), value=case.to_dict())
 
-        channel = None
+        user_cases = self.config.guild(guild).user_cases
+        async with user_cases.get_lock():
+            member_cases = await user_cases.get_raw(str(target_id), default=[])
+            member_cases.append(case_number)
+            await user_cases.set_raw(str(target_id), value=member_cases)
 
-        # Add case to the config first, worry about the channel stuff later.
+        if case.attachments:
+            await self._archive_attachments(case, case.attachments)
 
-        async with config.guild(guild)() as guild_data:
-            guild_data["cases"][str(case_number)] = case.to_dict()
-            guild_data["user_cases"].setdefault(str(target_member_id), []).append(case.case_number)
-
-        # If a channel exists for modlog, print it out, otherwise we don't care, we can
-        # store cases regardless of the presence of a modlog output channel, and
-        # [p]cases will still work normally.
-
-        try:
-            channel = await modlog.get_modlog_channel(guild)
-        except (discord.HTTPException, RuntimeError):
-            log.exception("No modlog channel has been configured. Modlog is disabled.")
-
-        if channel:
-            try:
-                if len(case.attachments) > 0:
-                    files = [discord.File(str(p)) for p in case.attachments]
-                    message = await channel.send(embed=embed, files=files)
-                else:
-                    message = await channel.send(embed=embed)
-
-                case.channel_id = message.channel.id
-                case.message_id = message.id
-            except discord.HTTPException:
-                log.exception(f"Failed to post case {case_number} to the modlog.")
+        await self._post_case(guild, case)
 
         return case
 
-    ### ----------------------------------------------------------------
-    ### Moderator feedback
-    ### ----------------------------------------------------------------
+    async def _post_case(self, guild: Guild, case: ModLog.Case) -> None:
+        """Post a stored case to the modlog channel, if there is one.
 
-    @staticmethod
-    async def confirm_action(ctx: Context, *, action_type: str, target: Member | User, reason: str | None = None, duration: str | None = None, title: str = "Confirm action", timeout: int = 30, ephemeral: bool = True) -> bool:
-        """Asks the moderator to confirm an action before it is carried out."""
-
-        if action_type in ModLog.ACTION_TYPES:
-            registered_action_type = ModLog.ACTION_TYPES[action_type]
-            action = f"`{registered_action_type.name}`{registered_action_type.emoji or ''}"
-        else:
-            log.warning(f"Confirming an action with no registered action type for {action_type}.")
-            action = f"`{action_type}`"
-
-        view = ConfirmationView(author=ctx.author, timeout=timeout)
-        embed = discord.Embed(title=title, color=discord.Colour.yellow())
-
-        embed.set_footer(text=f"You have {timeout} seconds to confirm.")
-
-        embed.add_field(name="Type:", value=action, inline=True)
-        embed.add_field(name="Target:", value=f"`{target.name}`", inline=True)
-        embed.add_field(name="Target ID:", value=f"`{target.id}`", inline=True)
-
-        if duration:
-            embed.add_field(name="Duration:", value=f"`{duration}`", inline=False)
-
-        if reason:
-            embed.add_field(name="Reason:", value=f"{reason}", inline=False)
-
-        message = await ctx.send(
-            view=view,
-            embed=embed,
-            ephemeral=ephemeral
-        )
-
-        await view.wait()
-
-        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-
-        if view.value is None:
-            embed.set_footer(text="Timed out")
-            embed.colour = discord.Colour.red()
-            await message.edit(embed=embed, view=None)
-            return False
-
-        if not view.value:
-            embed.set_footer(text="Cancelled")
-            embed.colour = discord.Colour.dark_grey()
-            await message.edit(embed=embed, view=None)
-            return False
-
-        embed.set_footer(text="Confirmed")
-        embed.colour = discord.Colour.green()
-        await message.edit(embed=embed, view=None)
-        return True
-
-    @staticmethod
-    async def send_case_action_summary(ctx: Context, case: ModLog.Case | None, *, note: str | None = None, ephemeral: bool = True) -> None:
-        """Reports a completed moderation action back to the moderator who carried it out."""
-
-        # A case is not guaranteed, the action type may be unregistered or the guild may have no modlog
-        # channel configured. The action itself still happened, so the moderator still needs to hear about it.
-
-        if not case:
-            content = "The action completed, but no modlog case could be created for it."
-
-            if note:
-                content = f"{content} {note}"
-
-            await ctx.send(content, ephemeral=ephemeral)
+        Everything here is best-effort: the case is already recorded, and
+        `[p]case` works whether or not this succeeds.
+        """
+        try:
+            channel = await modlog.get_modlog_channel(guild)
+        except (discord.HTTPException, RuntimeError):
+            log.debug("No modlog channel is configured for guild %s.", guild.id)
             return
 
-        embed = await ModLog._case_to_minimal_embed(case)
+        if channel is None:
+            return
 
-        # The note belongs in the description rather than a field, "Reason" must remain the last field.
-
-        if note:
-            embed.description = note
+        embed = self.case_embed(case)
 
         try:
-            await ctx.send(embed=embed, ephemeral=ephemeral)
+            if case.attachments:
+                files = [discord.File(str(p)) for p in case.attachments]
+                message = await channel.send(embed=embed, files=files)
+            else:
+                message = await channel.send(embed=embed)
         except discord.HTTPException:
-            log.exception(f"Failed to respond with the summary for case {case.case_number}.")
+            log.exception("Failed to post case %s to the modlog.", case.case_number)
+            return
+
+        case.channel_id = message.channel.id
+        case.message_id = message.id
+
+        # Persist the message coordinates so [p]reason can edit the post later.
+        # The original code set these on the object only, after it had already
+        # been written, so the stored case never learned where it was posted.
+        cases = self.config.guild(guild).cases
+        await cases.set_raw(str(case.case_number), "channel_id", value=case.channel_id)
+        await cases.set_raw(str(case.case_number), "message_id", value=case.message_id)
 
     ### ----------------------------------------------------------------
     ### Case management
@@ -442,7 +417,7 @@ class ModLog(commands.Cog):
     @commands.mod_or_permissions(manage_guild=True)
     @commands.hybrid_command("reason", aliases=["r"])
     async def reason(
-            self, ctx: commands.Context, case_number: int, *, reason: str | None = None
+        self, ctx: commands.Context, case_number: int, *, reason: str | None = None
     ) -> None:
         """Updates the reason for a modlog case."""
 
@@ -455,45 +430,48 @@ class ModLog(commands.Cog):
             await ctx.send("You must provide a reason.", ephemeral=True)
             return
 
-        case_dict = None
-
-        async with self.config.guild(guild).cases() as cases:
-            case_number_index = str(case_number)
-            if case_number_index in cases:
-                case_dict = cases[case_number_index]
-                cases[case_number_index]["reason"] = reason
+        cases = self.config.guild(guild).cases
+        case_dict = await cases.get_raw(str(case_number), default=None)
 
         if not case_dict:
             await ctx.send(f"Case `{case_number}` could not be found.", ephemeral=True)
             return
 
+        await cases.set_raw(str(case_number), "reason", value=reason)
+
         await ctx.send(f"Case `{case_number}` has been updated.")
 
-        # At this point the reason is updated within the database, the rest of this is just updating the message / UI
-        # which could be deleted and no longer valid, so treat any error as tolerable. Commands to lookup case details
-        # will still work just fine regardless.
+        # The reason is stored at this point; the rest is just refreshing a
+        # message that may have been deleted. Any failure here is tolerable,
+        # and [p]case will still report the new reason either way.
 
-        if not case_dict["channel_id"]:
+        channel_id = case_dict.get("channel_id")
+        message_id = case_dict.get("message_id")
+
+        if not channel_id or not message_id:
             return
 
-        channel = guild.get_channel(case_dict["channel_id"])
+        channel = guild.get_channel(channel_id)
 
-        if not channel or not case_dict["message_id"]:
+        if not channel:
             return
 
-        message = await channel.fetch_message(case_dict["message_id"])
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return
 
-        if not message:
+        if not message or not message.embeds:
             return
 
         embed = message.embeds[0]
 
-        if not embed:
-            return
-
         embed.set_field_at(len(embed.fields) - 1, name="Reason:", value=reason, inline=False)
 
-        await message.edit(embed=embed)
+        try:
+            await message.edit(embed=embed)
+        except discord.HTTPException:
+            log.debug("Could not edit the posted message for case %s.", case_number)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
@@ -506,28 +484,32 @@ class ModLog(commands.Cog):
         if not guild:
             return
 
-        case = None
+        raw = await self.config.guild(guild).cases.get_raw(str(case_number), default=None)
 
-        async with self.config.guild(guild).cases() as cases:
-            case_number_index = str(case_number)
-            if case_number_index in cases:
-                case_dict = cases[case_number_index]
-                case = ModLog.Case.from_dict(self.bot, guild, case_dict)
-
-        if not case:
+        if not raw:
             await ctx.send(f"Unable to locate modlog case `{case_number}`.", ephemeral=True)
             return
 
-        embed = await ModLog._case_to_detailed_embed(case)
+        try:
+            case = self.case_from_dict(guild, raw)
+        except UnknownActionType as error:
+            await ctx.send(
+                f"Case `{case_number}` has action type `{error.args[0]}`, which no loaded "
+                f"cog has registered. Load the cog that owns it and try again.",
+                ephemeral=True,
+            )
+            return
+
+        embed = self.case_embed(case, detailed=True)
 
         try:
-            if len(case.attachments) > 0:
+            if case.attachments:
                 files = [discord.File(str(p)) for p in case.attachments]
                 await ctx.send(embed=embed, files=files)
             else:
                 await ctx.send(embed=embed)
         except discord.HTTPException:
-            log.exception(f"Failed to respond with case {case_number}.")
+            log.exception("Failed to respond with case %s.", case_number)
 
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
@@ -540,18 +522,19 @@ class ModLog(commands.Cog):
         if not guild:
             return
 
-        user_case_data = await self.config.guild(guild).user_cases()
+        user_cases = self.config.guild(guild).user_cases
+        member_cases = await user_cases.get_raw(str(target.id), default=[])
 
-        if str(target.id) not in user_case_data:
+        if not member_cases:
             await ctx.send(f"No modlog cases found for `{target.name}`.", ephemeral=True)
             return
 
         await Interactions.page(
             ctx=ctx,
             provider=ModLog.CasePageEmbedProvider(
-                bot=self.bot,
-                guild=guild,
-                config=self.config,
+                cog=self,
                 ctx=ctx,
-                member=target)
+                guild=guild,
+                member=target,
+            ),
         )

@@ -11,10 +11,11 @@ import discord
 from discord import app_commands
 from redbot.core import Config, commands
 from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import humanize_list, pagify
+from redbot.core.utils.chat_formatting import pagify
 from redbot.core.utils.predicates import MessagePredicate
 
 from . import prompts
+from ._common.modlog_proxy import ModLogProxy
 
 log = logging.getLogger("red.vivi-cogs.topics")
 
@@ -36,12 +37,19 @@ class Topics(commands.Cog):
     __author__ = "vivirancy"
     __version__ = "1.0.0"
 
+    # A topic change request is a moderative activity, so it belongs in the
+    # requester's history like anything else. Anonymity is a property of the
+    # channel, not of the record.
+    ACTION_TYPES = (
+        {"type": "topic_change", "name": "Topic Change Request",
+         "color": NOTICE_COLOUR, "emoji": "💬"},
+    )
+
     DEFAULT_GUILD = {
         "changetopic_enabled": True,
         "use_defaults": True,
         "topics": [],
         "recent_topics": [],
-        "modlog_channel_id": None,
         "cooldown": 300,
         "dm_on_success": True,
     }
@@ -56,6 +64,19 @@ class Topics(commands.Cog):
         self.config = Config.get_conf(self, identifier=2604118893, force_registration=True)
         self.config.register_guild(**self.DEFAULT_GUILD)
         self.config.register_member(**self.DEFAULT_MEMBER)
+        # core_fallback is off deliberately. Red's core [p]case and [p]casesfor
+        # carry only @commands.guild_only() with no permission check, so a core
+        # case would let any member look up who asked for a topic change. The
+        # ModLog cog gates those lookups behind mod permissions; core does not,
+        # so when ModLog is absent the request goes unrecorded rather than public.
+        self.modlog = ModLogProxy(self, action_types=self.ACTION_TYPES, core_fallback=False)
+
+    async def cog_load(self) -> None:
+        await self.modlog.refresh()
+
+    @commands.Cog.listener()
+    async def on_cog_add(self, cog: commands.Cog) -> None:
+        await self.modlog.on_cog_add(cog)
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         return f"{super().format_help_for_context(ctx)}\n\nAuthor: {self.__author__}\nVersion: {self.__version__}"
@@ -105,35 +126,32 @@ class Topics(commands.Cog):
         note: Optional[str],
         jump_url: str,
     ) -> bool:
-        """Tell the moderators who asked, and where. Returns whether it landed.
+        """Record who asked, and where. Returns whether it landed.
 
-        This is deliberately *not* a Red modlog case. Core's ``[p]case`` and
-        ``[p]casesfor`` are guild-only and nothing more, so any member could
-        look up who filed a request -- which is the one thing this cog promises
-        will not happen. A cog-owned channel puts that behind real permissions.
+        The request is anonymous in the channel it was made in and nowhere else:
+        moderators need to know who asked in order to spot someone leaning on
+        the feature. The case names the requester as its target, which also puts
+        it in their ``[p]cases`` history alongside everything else.
+
+        Where and what they said go in the reason, since that is the field that
+        takes free text and stays last in the embed.
         """
-        channel_id = await self.config.guild(member.guild).modlog_channel_id()
-        if not channel_id:
-            return False
-        log_channel = member.guild.get_channel(channel_id)
-        if log_channel is None:
-            return False
-        embed = discord.Embed(
-            title="Topic change requested",
-            description=note or "*No message attached.*",
-            colour=NOTICE_COLOUR,
-            timestamp=discord.utils.utcnow(),
+        detail = note or "*No message attached.*"
+        reason = (
+            f"{detail}\n\n"
+            f"Requested in {channel.mention} — [jump to conversation]({jump_url})\n"
+            f"Anonymous in the channel, attributed here."
         )
-        embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
-        embed.add_field(name="Channel", value=channel.mention, inline=True)
-        embed.add_field(name="Context", value=f"[Jump to conversation]({jump_url})", inline=True)
-        embed.set_footer(text="The requester is anonymous to the channel, but not to you.")
-        try:
-            await log_channel.send(embed=embed, allowed_mentions=NO_MENTIONS)
-        except (discord.Forbidden, discord.HTTPException):
-            log.warning("Could not write to the mod-log channel in guild %s.", member.guild.id)
-            return False
-        return True
+
+        case = await self.modlog.create_case(
+            member.guild,
+            action_type="topic_change",
+            target=member,
+            moderator=member.guild.me,
+            reason=reason,
+        )
+
+        return case is not None
 
     # ------------------------------------------------------------------
     # Anonymity
@@ -382,45 +400,6 @@ class Topics(commands.Cog):
         await self.config.guild(ctx.guild).use_defaults.set(False)
         await ctx.send("Built-in topics turned off. Only your custom list will be used.")
 
-    @topicset.command(name="modlog")
-    async def topicset_modlog(
-        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
-    ) -> None:
-        """Set a channel for topic change requests. Omit the channel to turn it off."""
-        if channel is None:
-            await self.config.guild(ctx.guild).modlog_channel_id.set(None)
-            await ctx.send(
-                "Topic request logging disabled. Requests will still be posted "
-                "anonymously in the channel, but no one will be told who made them."
-            )
-            return
-        await self.config.guild(ctx.guild).modlog_channel_id.set(channel.id)
-        message = f"Topic change requests will be logged to {channel.mention}."
-        missing = self._missing_channel_perms(ctx.guild, channel)
-        if missing:
-            message += f"\n\nHeads up — I'm missing {humanize_list(missing)} there."
-        if channel.permissions_for(ctx.guild.default_role).read_messages:
-            message += (
-                f"\n\nAlso worth checking: `@everyone` can read {channel.mention}. "
-                "These logs name the requester, so anyone who can read them can "
-                "un-anonymise every request."
-            )
-        await ctx.send(message)
-
-    @staticmethod
-    def _missing_channel_perms(
-        guild: discord.Guild, channel: discord.TextChannel
-    ) -> List[str]:
-        perms = channel.permissions_for(guild.me)
-        return [
-            name
-            for name, has in (
-                ("Send Messages", perms.send_messages),
-                ("Embed Links", perms.embed_links),
-            )
-            if not has
-        ]
-
     @topicset.command(name="cooldown")
     async def topicset_cooldown(self, ctx: commands.Context, seconds: int) -> None:
         """Set the per-member wait between requests, in seconds (0-3600, 0 disables)."""
@@ -468,11 +447,6 @@ class Topics(commands.Cog):
     async def topicset_settings(self, ctx: commands.Context) -> None:
         """Show the current configuration."""
         conf = await self.config.guild(ctx.guild).all()
-        log_channel = (
-            ctx.guild.get_channel(conf["modlog_channel_id"])
-            if conf["modlog_channel_id"]
-            else None
-        )
 
         embed = discord.Embed(title="Topics settings", colour=await ctx.embed_colour())
         embed.add_field(
@@ -487,7 +461,7 @@ class Topics(commands.Cog):
         )
         embed.add_field(
             name="Mod log",
-            value=log_channel.mention if log_channel else "*not set*",
+            value="ModLog cases" if self.modlog.available else "*ModLog not loaded*",
             inline=True,
         )
         embed.add_field(
@@ -502,11 +476,13 @@ class Topics(commands.Cog):
             value="On" if conf["dm_on_success"] else "Off",
             inline=True,
         )
-        if not conf["modlog_channel_id"]:
+        if not self.modlog.available:
             embed.set_footer(
                 text=(
-                    "No mod log set — moderators can't see who asks for a topic change. "
-                    f"Set one with {ctx.clean_prefix}topicset modlog."
+                    "ModLog isn't loaded, so requests aren't being recorded and "
+                    "moderators can't see who asks. Red's core modlog is not used "
+                    "here: its case lookups are readable by any member, which would "
+                    "undo the anonymity. Load it with [p]load modlog."
                 )
             )
         await ctx.send(embed=embed)
