@@ -8,7 +8,7 @@
 """The one embed builder for everything this repo logs.
 
 Both the ModLog cog (posting a case to the channel) and consuming cogs
-(reporting an action back to the moderator, or logging a non-case event) render
+(reporting an action back to the actor, or logging a non-case event) render
 through here, so a verification pass and a ban read as siblings in the channel
 rather than each carrying its own house style.
 
@@ -34,7 +34,7 @@ def build_case_embed(
     reason: str,
     timestamp: float,
     action_emoji: str | None = None,
-    moderator: Member | User | int | None = None,
+    actor: Member | User | int | None = None,
     duration: str | None = None,
     case_number: int | None = None,
     detailed: bool = False,
@@ -43,7 +43,7 @@ def build_case_embed(
 
     ``case_number`` is optional so that events which are deliberately not cases
     still render in the same shape, minus the case field. ``target`` is
-    optional too, for a global or moderator-only action with no single member
+    optional too, for a global or actor-only action with no single member
     it happened to -- the Target field is omitted entirely rather than shown
     as unavailable, since there was never one to begin with.
 
@@ -61,16 +61,16 @@ def build_case_embed(
 
     embed.add_field(name="Type:", value=f"`{action_name}`{action_emoji or ''}", inline=True)
 
-    if moderator is not None:
-        if isinstance(moderator, (Member, User)):
-            embed.add_field(name="Moderator:", value=f"`{moderator.name}`🛡", inline=not detailed)
+    if actor is not None:
+        if isinstance(actor, (Member, User)):
+            embed.add_field(name="Actor:", value=f"`{actor.name}`🛡", inline=not detailed)
             if detailed:
-                embed.add_field(name="Moderator ID:", value=f"`{moderator.id}`", inline=False)
+                embed.add_field(name="Actor ID:", value=f"`{actor.id}`", inline=False)
         else:
-            label = "`Unavailable`🛡" if detailed else f"`{moderator}`🛡"
-            embed.add_field(name="Moderator:", value=label, inline=not detailed)
+            label = "`Unavailable`🛡" if detailed else f"`{actor}`🛡"
+            embed.add_field(name="Actor:", value=label, inline=not detailed)
             if detailed:
-                embed.add_field(name="Moderator ID:", value=f"`{moderator}`", inline=False)
+                embed.add_field(name="Actor ID:", value=f"`{actor}`", inline=False)
 
     if target is not None:
         if isinstance(target, (Member, User)):

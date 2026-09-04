@@ -29,7 +29,7 @@ from ._common.modlog_render import build_case_embed
 log = logging.getLogger("red.vivi-cogs.modlog")
 
 #: Category assumed for a registration that didn't declare one -- most
-#: registrants are case-worthy moderator actions, so this is the common case.
+#: registrants are case-worthy actor actions, so this is the common case.
 DEFAULT_CATEGORY = "modlog"
 
 
@@ -62,7 +62,7 @@ class ModLog(commands.Cog):
     class Case:
         action_type: ModLog.ActionType
         case_number: int
-        moderator: Member | User | int | None
+        actor: Member | User | int | None
         target: Member | User | int | None
         reason: str
         channel_id: int | None
@@ -76,7 +76,7 @@ class ModLog(commands.Cog):
             *,
             action_type: ModLog.ActionType,
             case_number: int,
-            moderator: Member | User | int | None,
+            actor: Member | User | int | None,
             target: Member | User | int | None,
             reason: str,
             timestamp: float,
@@ -87,7 +87,7 @@ class ModLog(commands.Cog):
         ):
             self.action_type = action_type
             self.case_number = case_number
-            self.moderator = moderator
+            self.actor = actor
             self.target = target
             self.reason = reason
             self.timestamp = timestamp
@@ -105,10 +105,10 @@ class ModLog(commands.Cog):
             """Reduce a participant to a stored ID.
 
             Used for both fields, and None is legitimate for either: a target
-            of None means a global or moderator-only action with no single
+            of None means a global or actor-only action with no single
             member it happened to (e.g. warning a whole channel), and a
-            moderator of None means an unattributed or automated one. Core
-            modlog treats its moderator as optional the same way, though it
+            actor of None means an unattributed or automated one. Core
+            modlog treats its actor as optional the same way, though it
             has no way to represent a None target at all.
             """
             if who is None:
@@ -125,7 +125,7 @@ class ModLog(commands.Cog):
                 "timestamp": self.timestamp,
                 "duration": self.duration,
                 "attachments": [str(p) for p in self.attachments],
-                "moderator_id": self._identifier(self.moderator),
+                "actor_id": self._identifier(self.actor),
                 "target_id": self._identifier(self.target),
             }
 
@@ -142,13 +142,17 @@ class ModLog(commands.Cog):
             ``action_types`` is passed in rather than read off the class, so a
             case can be rendered against whichever registry the caller holds.
             """
-            mod_id = data["moderator_id"]
+            if "actor_id" in data:
+                actor_id = data["actor_id"]
+            else:
+                actor_id = data["moderator_id"]
+
             target_id = data["target_id"]
 
-            if mod_id is None:
-                moderator = None
+            if actor_id is None:
+                actor = None
             else:
-                moderator = guild.get_member(mod_id) or bot.get_user(mod_id) or mod_id
+                actor = guild.get_member(actor_id) or bot.get_user(actor_id) or actor_id
 
             if target_id is None:
                 target = None
@@ -161,7 +165,7 @@ class ModLog(commands.Cog):
             return cls(
                 action_type=action_types[data["action_type"]],
                 case_number=data["case_number"],
-                moderator=moderator,
+                actor=actor,
                 target=target,
                 reason=data["reason"],
                 timestamp=data.get("timestamp", 0.0),
@@ -220,9 +224,9 @@ class ModLog(commands.Cog):
             return int(ceil(cases / self.page_len)) if cases > self.page_len else 1
 
     class ActionsPageEmbedProvider(PageEmbedProvider):
-        """Cases a member took as moderator, rather than cases taken against them.
+        """Cases a member took as actor, rather than cases taken against them.
 
-        A near-duplicate of `CasePageEmbedProvider` reading `moderator_cases`
+        A near-duplicate of `CasePageEmbedProvider` reading `actor_cases`
         instead of `user_cases` -- kept separate rather than parameterized,
         since the two indexes and the two commands that read them are
         conceptually distinct (what happened to someone vs. what they did) and
@@ -236,16 +240,16 @@ class ModLog(commands.Cog):
             self.guild = guild
             self.member = member
             self.page_len = 10
-            self.moderator_cases: List[int] = []
+            self.actor_cases: List[int] = []
 
         async def setup(self) -> None:
-            moderator_cases = self.cog.config.guild(self.guild).moderator_cases
-            self.moderator_cases = await moderator_cases.get_raw(str(self.member.id), default=[])
+            actor_cases = self.cog.config.guild(self.guild).actor_cases
+            self.actor_cases = await actor_cases.get_raw(str(self.member.id), default=[])
 
         async def provide(self, page: int) -> discord.Embed:
-            end = len(self.moderator_cases) - (page - 1) * self.page_len
+            end = len(self.actor_cases) - (page - 1) * self.page_len
             start = max(0, end - self.page_len)
-            case_ids = self.moderator_cases[start:end]
+            case_ids = self.actor_cases[start:end]
 
             cases = self.cog.config.guild(self.guild).cases
             content = ""
@@ -272,14 +276,14 @@ class ModLog(commands.Cog):
             )
 
         async def pages(self) -> int:
-            cases = len(self.moderator_cases)
+            cases = len(self.actor_cases)
             return int(ceil(cases / self.page_len)) if cases > self.page_len else 1
 
     DEFAULT_GUILD = {
         "case_sequence": 1,
         "cases": {},
         "user_cases": {},
-        "moderator_cases": {},
+        "actor_cases": {},
         "log_channels": {"categories": {category: None for category in CATEGORIES}, "events": {}},
     }
 
@@ -371,7 +375,7 @@ class ModLog(commands.Cog):
     def case_embed(cls, case: ModLog.Case, *, detailed: bool = False) -> discord.Embed:
         """Render a case through the shared builder.
 
-        Consuming cogs render their moderator summaries with the same function
+        Consuming cogs render their actor summaries with the same function
         from their own vendored copy, so a case looks the same in the channel
         and in the reply that follows the action.
         """
@@ -380,7 +384,7 @@ class ModLog(commands.Cog):
             action_color=case.action_type.color,
             action_emoji=case.action_type.emoji,
             case_number=case.case_number,
-            moderator=case.moderator,
+            actor=case.actor,
             target=case.target,
             reason=case.reason,
             timestamp=case.timestamp,
@@ -435,7 +439,7 @@ class ModLog(commands.Cog):
         guild: Guild,
         *,
         action_type: str,
-        moderator: Member | User | int | None = None,
+        actor: Member | User | int | None = None,
         target: Member | User | int | None = None,
         reason: str | None = None,
         duration: str | None = None,
@@ -443,9 +447,9 @@ class ModLog(commands.Cog):
     ) -> ModLog.Case:
         """Create, store, and post a modlog case.
 
-        ``target`` may be omitted for a global or moderator-only action with
+        ``target`` may be omitted for a global or actor-only action with
         no single member it happened to -- it is then simply not filed under
-        anyone's `[p]cases` history, only under the moderator's `[p]actions`.
+        anyone's `[p]cases` history, only under the actor's `[p]actions`.
         """
 
         registered = self._action_types.get(action_type)
@@ -463,10 +467,10 @@ class ModLog(commands.Cog):
         case = ModLog.Case(
             action_type=registered,
             case_number=case_number,
-            moderator=moderator,
+            actor=actor,
             target=resolved_target,
             reason=reason
-            or f"Responsible moderator, use `[p]reason {case_number}` to set the reason for this case.",
+            or f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case.",
             timestamp=datetime.datetime.now(datetime.timezone.utc).timestamp(),
             duration=duration,
             attachments=attachments,
@@ -487,13 +491,13 @@ class ModLog(commands.Cog):
                 member_cases.append(case_number)
                 await user_cases.set_raw(str(target_id), value=member_cases)
 
-        moderator_id = ModLog.Case._identifier(moderator)
-        if moderator_id is not None:
-            moderator_cases = self.config.guild(guild).moderator_cases
-            async with moderator_cases.get_lock():
-                mod_cases = await moderator_cases.get_raw(str(moderator_id), default=[])
+        actor_id = ModLog.Case._identifier(actor)
+        if actor_id is not None:
+            actor_cases = self.config.guild(guild).actor_cases
+            async with actor_cases.get_lock():
+                mod_cases = await actor_cases.get_raw(str(actor_id), default=[])
                 mod_cases.append(case_number)
-                await moderator_cases.set_raw(str(moderator_id), value=mod_cases)
+                await actor_cases.set_raw(str(actor_id), value=mod_cases)
 
         if case.attachments:
             await self._archive_attachments(case, case.attachments)
@@ -683,12 +687,12 @@ class ModLog(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     @commands.hybrid_command("actions")
-    async def actions(self, ctx: commands.Context, moderator: Member) -> None:
-        """Returns moderator actions taken by a specific user.
+    async def actions(self, ctx: commands.Context, actor: Member) -> None:
+        """Returns actor actions taken by a specific user.
 
         A case is something that happened *to* someone (`[p]cases`); an action
-        is something a moderator *did* -- this reads that second index, which
-        every case with a moderator is filed under regardless of whether it
+        is something a actor *did* -- this reads that second index, which
+        every case with a actor is filed under regardless of whether it
         also has a target.
         """
 
@@ -697,11 +701,11 @@ class ModLog(commands.Cog):
         if not guild:
             return
 
-        moderator_cases = self.config.guild(guild).moderator_cases
-        mod_cases = await moderator_cases.get_raw(str(moderator.id), default=[])
+        actor_cases = self.config.guild(guild).actor_cases
+        mod_cases = await actor_cases.get_raw(str(actor.id), default=[])
 
         if not mod_cases:
-            await ctx.send(f"No actions found for `{moderator.name}`.", ephemeral=True)
+            await ctx.send(f"No actions found for `{actor.name}`.", ephemeral=True)
             return
 
         await Interactions.page(
@@ -710,7 +714,7 @@ class ModLog(commands.Cog):
                 cog=self,
                 ctx=ctx,
                 guild=guild,
-                member=moderator,
+                member=actor,
             ),
         )
 
