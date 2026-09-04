@@ -38,6 +38,7 @@ SOURCE_DIR = REPO_ROOT / "common"
 #: anything from ``common/``; CI fails if a cog imports ``_common`` without
 #: being listed, or is listed without using it.
 VENDORED_COGS = (
+    "audit",
     "moderation",
     "modlog",
     "quarantine",

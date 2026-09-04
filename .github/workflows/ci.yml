@@ -61,4 +61,4 @@ jobs:
           python-version: "3.11"
 
       - name: Compile every cog
-        run: python -m compileall -q common tools modlog moderation quarantine verification topics
+        run: python -m compileall -q common tools modlog moderation quarantine verification topics audit

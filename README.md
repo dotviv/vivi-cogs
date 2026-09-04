@@ -21,6 +21,7 @@ Requires Red 3.5.0 or newer. Dependencies (Pillow) are installed automatically.
 | --- | --- |
 | `verification` | Gate new members behind an image captcha delivered through a button panel, with configurable roles to add and remove on success. |
 | `topics` | Suggest random conversation starters, and let anyone anonymously ask the channel to change the subject. |
+| `audit` | Report message edits/deletes and channel/role changes to dedicated channels, plus a modlog case digest. |
 
 ## Verification — quick start
 
@@ -157,6 +158,25 @@ than un-anonymise a requester.
 twice in a row. To run on your own list alone, add some topics and then turn the
 built-ins off with `[p]topicset defaults`.
 
+## Audit — quick start
+
+Nothing is logged until you point a category at a channel:
+
+```
+[p]auditset messagechannel #message-log      # message edits/deletes
+[p]auditset structurechannel #server-log     # channel/role changes, member role grants/revokes
+[p]auditset settings                         # review what's configured
+```
+
+Every event is a plain log line, not a modlog case — a channel rename or a member
+picking up a role has no member it happened "to", so none of this shows up in
+`[p]cases`. `[p]audit overview` summarizes real modlog case activity instead (bans,
+warns, quarantine actions, topic-change requests, and so on from other cogs) over a
+configurable window, defaulting to the last 24 hours.
+
+Command-usage auditing, reaction auditing, and voice-channel auditing are not
+implemented yet.
+
 ## Command reference
 
 ### Setup — `[p]verifyset` (requires Manage Server)
@@ -206,6 +226,20 @@ Both are available as slash commands once the owner runs `[p]slash enablecog Top
 | `dm` | Whether to DM a member confirming their request went through (prefix only) |
 | `toggle` | Enable or disable `changetopic` |
 | `settings` | Show the current configuration |
+
+### Audit setup — `[p]auditset` (requires Manage Server)
+
+| Command | Description |
+| --- | --- |
+| `messagechannel [channel]` | Set (or clear) the channel message edits/deletes are logged to |
+| `structurechannel [channel]` | Set (or clear) the channel channel/role changes are logged to |
+| `settings` | Show the current configuration |
+
+### Audit — requires Manage Server (or mod)
+
+| Command | Description |
+| --- | --- |
+| `audit overview [hours]` | Summarize modlog case activity from the last `hours` hours (1-168, default 24) |
 
 ## Development
 

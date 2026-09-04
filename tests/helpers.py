@@ -61,6 +61,9 @@ class FakeGroup:
     def get_lock(self) -> asyncio.Lock:
         return self._lock
 
+    async def __call__(self) -> dict:
+        return dict(self.data.get(self.key, {}))
+
     async def get_raw(self, *path: Any, default: Any = ...) -> Any:
         node = self.data.setdefault(self.key, {})
         for part in path:
@@ -82,6 +85,8 @@ class FakeGuildConfig:
         self.case_sequence = FakeValue(data, "case_sequence", 1)
         self.cases = FakeGroup(data, "cases", writes)
         self.user_cases = FakeGroup(data, "user_cases", writes)
+        self.moderator_cases = FakeGroup(data, "moderator_cases", writes)
+        self.log_channels = FakeGroup(data, "log_channels", writes)
 
 
 class FakeConfig:
@@ -106,9 +111,14 @@ class FakeGuild:
 
     def __init__(self) -> None:
         self.me = FakeUser(1, "ViviBot")
+        #: channel_id -> channel object, for tests exercising log-channel routing.
+        self.channels: Dict[int, Any] = {}
 
     def get_member(self, member_id: int):
         return None
+
+    def get_channel(self, channel_id: int):
+        return self.channels.get(channel_id)
 
 
 class FakeMember(FakeUser):
@@ -144,12 +154,29 @@ class FakeMessage:
 class RecordingChannel:
     """A modlog channel that captures what was sent to it."""
 
-    def __init__(self) -> None:
+    def __init__(self, id: int = 0) -> None:
+        self.id = id
+        self.mention = f"<#{id}>"
         self.sent: List[dict] = []
 
     async def send(self, **kwargs: Any) -> FakeMessage:
         self.sent.append(kwargs)
         return FakeMessage()
+
+    def permissions_for(self, member: Any) -> types.SimpleNamespace:
+        return types.SimpleNamespace(send_messages=True, embed_links=True)
+
+
+class FakeCoreCase:
+    """Stands in for a real core-modlog ``Case``, as returned by ``get_all_cases``."""
+
+    def __init__(self, *, case_number, created_at, action_type, user, moderator, reason):
+        self.case_number = case_number
+        self.created_at = created_at
+        self.action_type = action_type
+        self.user = user
+        self.moderator = moderator
+        self.reason = reason
 
 
 class FakeCoreModlog:
@@ -162,6 +189,7 @@ class FakeCoreModlog:
     def __init__(self) -> None:
         self.registered: List[str] = []
         self.created: List[str] = []
+        self.cases: List[FakeCoreCase] = []
         self.channel: Any = None
         self.raise_on_duplicate = True
         #: "case" | None | "value_error" | "runtime_error"
@@ -183,14 +211,22 @@ class FakeCoreModlog:
         if self.create_result is None:
             return None
 
-        class CoreCase:
-            case_number = 42
-            created_at = 1700000000
-
-        return CoreCase()
+        case = FakeCoreCase(
+            case_number=42,
+            created_at=1700000000,
+            action_type=action_type,
+            user=user,
+            moderator=kwargs.get("moderator"),
+            reason=kwargs.get("reason"),
+        )
+        self.cases.append(case)
+        return case
 
     async def get_modlog_channel(self, guild):
         return self.channel
+
+    async def get_all_cases(self, guild, bot):
+        return list(self.cases)
 
 
 def make_modlog_cog(bot: FakeBot):

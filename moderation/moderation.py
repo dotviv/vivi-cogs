@@ -33,11 +33,11 @@ class Moderation(commands.Cog):
     # this restructure exists to remove. The proxy pushes these to ModLog when it
     # is loaded, and mirrors them into Red's core modlog for the fallback path.
     ACTION_TYPES = (
-        {"type": "warn", "name": "Warning", "color": discord.Colour.yellow(), "emoji": "⚠️"},
-        {"type": "kick", "name": "Kick", "color": discord.Colour.yellow(), "emoji": "🦶"},
-        {"type": "tempban", "name": "Temporary Ban", "color": discord.Colour.red(), "emoji": "🔨"},
-        {"type": "ban", "name": "Ban", "color": discord.Colour.red(), "emoji": "🔨"},
-        {"type": "unban", "name": "Unban", "color": discord.Colour.green(), "emoji": "🔨"},
+        {"type": "warn", "name": "Warning", "color": discord.Colour.yellow(), "emoji": "⚠️", "category": "modlog"},
+        {"type": "kick", "name": "Kick", "color": discord.Colour.yellow(), "emoji": "🦶", "category": "modlog"},
+        {"type": "tempban", "name": "Temporary Ban", "color": discord.Colour.red(), "emoji": "🔨", "category": "modlog"},
+        {"type": "ban", "name": "Ban", "color": discord.Colour.red(), "emoji": "🔨", "category": "modlog"},
+        {"type": "unban", "name": "Unban", "color": discord.Colour.green(), "emoji": "🔨", "category": "modlog"},
     )
 
     def __init__(self, bot: Red) -> None:

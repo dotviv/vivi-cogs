@@ -1,7 +1,7 @@
 {
     "author": ["vivirancy"],
     "name": "modlog",
-    "install_msg": "Thank you for installing modlog!\nCases are posted to the channel set with `[p]modlogset modlog`; they are recorded either way, so that is optional.\nOther vivi-cogs use this automatically once it is loaded.",
+    "install_msg": "Thank you for installing modlog!\nCases are recorded either way, but by default are posted to the channel set with Red core's `[p]modlogset modlog`. Use `[p]modlogchannels` to route specific action types or categories (adminlog/modlog/memberlog) to their own channels instead.\nOther vivi-cogs use this automatically once it is loaded.",
     "short": "Better log summaries, case recall, user case lookup, attachments, and more!",
     "description": "A drop-in modlog replacement for the red core modlog allowing for better log summaries, case recall, user case lookup, attachments (such as transcripts) and more!",
     "tags": [

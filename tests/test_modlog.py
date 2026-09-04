@@ -12,6 +12,18 @@ from modlog.modlog import ModLog, UnknownActionType
 
 from tests.helpers import FakeBot, FakeGuild, RecordingChannel, make_modlog_cog
 
+
+class FakeCommandContext:
+    def __init__(self, *, guild) -> None:
+        self.guild = guild
+        self.sent: list = []
+
+    async def embed_colour(self):
+        return discord.Colour.blurple()
+
+    async def send(self, content=None, **kwargs):
+        self.sent.append(content if content is not None else kwargs)
+
 WARN = {
     "type": "warn",
     "name": "Warning",
@@ -63,6 +75,23 @@ class TestActionTypeRegistry(ModLogTestCase):
 
     def test_unknown_type_resolves_to_none(self):
         self.assertIsNone(self.cog.action_type("nope"))
+
+    def test_registered_type_defaults_to_modlog_category(self):
+        self.assertEqual(self.cog.action_type("warn").category, "modlog")
+
+    def test_explicit_category_round_trips(self):
+        self.cog.register_action_type(
+            type="raid_alert", name="Raid Alert", color=discord.Colour.red(), emoji="🚨", category="adminlog"
+        )
+
+        self.assertEqual(self.cog.action_type("raid_alert").category, "adminlog")
+
+    def test_unknown_category_is_coerced_to_default(self):
+        self.cog.register_action_type(
+            type="mystery", name="Mystery", color=discord.Colour.blue(), emoji=None, category="nonsense"
+        )
+
+        self.assertEqual(self.cog.action_type("mystery").category, "modlog")
 
 
 class TestCaseSerialisation(ModLogTestCase):
@@ -116,6 +145,19 @@ class TestCaseSerialisation(ModLogTestCase):
         embed = self.cog.case_embed(rebuilt)
         self.assertNotIn("Moderator:", [field.name for field in embed.fields])
 
+    def test_target_may_be_none(self):
+        """A moderator-only action -- e.g. warning a whole channel -- has no
+        single member it happened to."""
+        payload = self._case(target=None).to_dict()
+
+        self.assertIsNone(payload["target_id"])
+
+        rebuilt = self.cog.case_from_dict(self.guild, payload)
+        self.assertIsNone(rebuilt.target)
+
+        embed = self.cog.case_embed(rebuilt)
+        self.assertNotIn("Target:", [field.name for field in embed.fields])
+
 
 class TestCreateCase(ModLogTestCase):
     async def test_numbers_cases_sequentially(self):
@@ -139,6 +181,39 @@ class TestCreateCase(ModLogTestCase):
         )
 
         self.assertEqual(self.cog.config.data["user_cases"]["222"], [1, 2])
+
+    async def test_indexes_cases_against_the_moderator(self):
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+        )
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=333, reason="y"
+        )
+
+        self.assertEqual(self.cog.config.data["moderator_cases"]["111"], [1, 2])
+
+    async def test_targetless_case_is_stored_but_not_indexed_by_target(self):
+        """A moderator-only action -- e.g. warning a whole channel -- still
+        gets a case, just not filed under anyone's target-history."""
+        await self.cog.create_case(
+            self.guild,
+            action_type="warn",
+            moderator=111,
+            target=None,
+            reason="channel-wide warning",
+        )
+
+        self.assertIn("1", self.cog.config.data["cases"])
+        self.assertNotIn("user_cases", self.cog.config.data)
+        self.assertEqual(self.cog.config.data["moderator_cases"]["111"], [1])
+
+    async def test_case_with_no_moderator_is_not_indexed_by_moderator(self):
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=None, target=222, reason="x"
+        )
+
+        self.assertNotIn("moderator_cases", self.cog.config.data)
+        self.assertEqual(self.cog.config.data["user_cases"]["222"], [1])
 
     async def test_every_write_is_scoped_to_a_key(self):
         """The original opened the whole guild group twice per case, making each
@@ -182,6 +257,143 @@ class TestCreateCase(ModLogTestCase):
         self.assertEqual(stored["message_id"], 555)
 
 
+class TestChannelRouting(ModLogTestCase):
+    """_post_case's resolution order: event override -> category -> core."""
+
+    async def test_falls_back_to_core_channel_when_nothing_configured(self):
+        self.channel = RecordingChannel()
+
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+        )
+
+        self.assertEqual(len(self.channel.sent), 1)
+
+    async def test_category_channel_is_preferred_over_core(self):
+        self.channel = RecordingChannel()  # core fallback -- must not receive anything
+        category_channel = RecordingChannel(id=501)
+        self.guild.channels[501] = category_channel
+        self.cog.config.data["log_channels"] = {"categories": {"modlog": 501}, "events": {}}
+
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+        )
+
+        self.assertEqual(len(category_channel.sent), 1)
+        self.assertEqual(len(self.channel.sent), 0)
+
+    async def test_event_override_wins_over_category(self):
+        category_channel = RecordingChannel(id=501)
+        event_channel = RecordingChannel(id=502)
+        self.guild.channels[501] = category_channel
+        self.guild.channels[502] = event_channel
+        self.cog.config.data["log_channels"] = {
+            "categories": {"modlog": 501},
+            "events": {"warn": 502},
+        }
+
+        await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+        )
+
+        self.assertEqual(len(event_channel.sent), 1)
+        self.assertEqual(len(category_channel.sent), 0)
+
+
+class TestChannelCommands(ModLogTestCase):
+    async def test_setting_a_category_channel(self):
+        channel = RecordingChannel(id=501)
+        self.guild.channels[501] = channel
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog._modlogchannels_category(ctx, "modlog", channel)
+
+        stored = await self.cog.config.guild(self.guild).log_channels.get_raw(
+            "categories", "modlog", default=None
+        )
+        self.assertEqual(stored, 501)
+        self.assertIn("set to", ctx.sent[-1])
+
+    async def test_unknown_category_is_rejected(self):
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog._modlogchannels_category(ctx, "nonsense", RecordingChannel())
+
+        self.assertIn("Unknown category", ctx.sent[-1])
+
+    async def test_setting_an_event_channel(self):
+        channel = RecordingChannel(id=502)
+        self.guild.channels[502] = channel
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog._modlogchannels_event(ctx, "warn", channel)
+
+        stored = await self.cog.config.guild(self.guild).log_channels.get_raw(
+            "events", "warn", default=None
+        )
+        self.assertEqual(stored, 502)
+
+    async def test_unregistered_event_type_is_rejected(self):
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog._modlogchannels_event(ctx, "nope", RecordingChannel())
+
+        self.assertIn("Unknown action type", ctx.sent[-1])
+
+    async def test_settings_renders_categories_and_events(self):
+        category_channel = RecordingChannel(id=501)
+        event_channel = RecordingChannel(id=502)
+        self.guild.channels[501] = category_channel
+        self.guild.channels[502] = event_channel
+        log_channels = self.cog.config.guild(self.guild).log_channels
+        await log_channels.set_raw("categories", "modlog", value=501)
+        await log_channels.set_raw("events", "warn", value=502)
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog._modlogchannels_settings(ctx)
+
+        embed = ctx.sent[-1]["embed"]
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertIn("<#501>", fields["Categories"])
+        self.assertIn("<#502>", fields["Event overrides"])
+
+
+class TestCasesSince(ModLogTestCase):
+    async def test_filters_by_timestamp(self):
+        old = await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="old"
+        )
+        self.cog.config.data["cases"][str(old.case_number)]["timestamp"] = 1000.0
+
+        new = await self.cog.create_case(
+            self.guild, action_type="warn", moderator=111, target=222, reason="new"
+        )
+        self.cog.config.data["cases"][str(new.case_number)]["timestamp"] = 5000.0
+
+        recent = await self.cog.cases_since(self.guild, 4000.0)
+
+        self.assertEqual([c.case_number for c in recent], [new.case_number])
+
+    async def test_skips_cases_from_unloaded_cogs(self):
+        """A digest can't name a case whose owning cog isn't loaded, so it is
+        skipped rather than raising -- same policy as CasePageEmbedProvider."""
+        case = ModLog.Case(
+            action_type=self.cog.action_type("warn"),
+            case_number=1,
+            moderator=111,
+            target=222,
+            reason="test",
+            timestamp=0.0,
+            duration=None,
+        )
+        bare = make_modlog_cog(self.bot)
+        bare.config.data["cases"] = {"1": case.to_dict()}
+
+        recent = await bare.cases_since(self.guild, 0.0)
+
+        self.assertEqual(recent, [])
+
+
 class TestEmbedBuilder(unittest.TestCase):
     """The one renderer, shared by ModLog and every consuming cog."""
 
@@ -211,10 +423,29 @@ class TestEmbedBuilder(unittest.TestCase):
 
     def test_reason_is_always_the_final_field(self):
         """[p]reason edits a posted case by index from the end."""
-        for kwargs in ({}, {"case_number": 7}, {"detailed": True}, {"duration": "1h"}):
+        for kwargs in (
+            {},
+            {"case_number": 7},
+            {"detailed": True},
+            {"duration": "1h"},
+            {"target": None},
+        ):
             with self.subTest(**kwargs):
                 embed = self._build(**kwargs)
                 self.assertEqual(embed.fields[-1].name, "Reason:")
+
+    def test_omitting_the_target_omits_the_field(self):
+        """A global or moderator-only action has no single member it happened
+        to -- shown as absent entirely, not as unavailable."""
+        embed = self._build(target=None)
+
+        self.assertNotIn("Target:", [field.name for field in embed.fields])
+        self.assertNotIn("Target ID:", [field.name for field in embed.fields])
+
+    def test_omitting_the_target_still_omits_ids_when_detailed(self):
+        embed = self._build(target=None, detailed=True)
+
+        self.assertNotIn("Target ID:", [field.name for field in embed.fields])
 
     def test_moderator_is_omitted_when_absent(self):
         embed = self._build()

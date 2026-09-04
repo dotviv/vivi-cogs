@@ -37,9 +37,10 @@ class Topics(commands.Cog):
     __author__ = "vivirancy"
     __version__ = "1.0.0"
 
-    # A topic change request is a moderative activity, so it belongs in the
-    # requester's history like anything else. Anonymity is a property of the
-    # channel, not of the record.
+    # A topic change request is something the requester did, not something
+    # that happened to them, so the case names them as its moderator with no
+    # target -- it shows up in their [p]actions, not [p]cases. Anonymity is a
+    # property of the channel, not of the record.
     ACTION_TYPES = (
         {"type": "topic_change", "name": "Topic Change Request",
          "color": NOTICE_COLOUR, "emoji": "💬"},
@@ -69,6 +70,8 @@ class Topics(commands.Cog):
         # case would let any member look up who asked for a topic change. The
         # ModLog cog gates those lookups behind mod permissions; core does not,
         # so when ModLog is absent the request goes unrecorded rather than public.
+        # (Core could not represent this case at all regardless -- it has no
+        # target -- but the fallback stays off rather than relying on that.)
         self.modlog = ModLogProxy(self, action_types=self.ACTION_TYPES, core_fallback=False)
 
     async def cog_load(self) -> None:
@@ -130,8 +133,10 @@ class Topics(commands.Cog):
 
         The request is anonymous in the channel it was made in and nowhere else:
         moderators need to know who asked in order to spot someone leaning on
-        the feature. The case names the requester as its target, which also puts
-        it in their ``[p]cases`` history alongside everything else.
+        the feature. The case names the requester as its moderator, with no
+        target -- asking for a topic change is something they did, not
+        something that happened to them, so it belongs in their
+        ``[p]actions`` history rather than ``[p]cases``.
 
         Where and what they said go in the reason, since that is the field that
         takes free text and stays last in the embed.
@@ -146,8 +151,7 @@ class Topics(commands.Cog):
         case = await self.modlog.create_case(
             member.guild,
             action_type="topic_change",
-            target=member,
-            moderator=member.guild.me,
+            moderator=member,
             reason=reason,
         )
 

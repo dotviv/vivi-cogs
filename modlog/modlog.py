@@ -6,7 +6,7 @@ import logging
 import shutil
 from math import ceil
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import discord
 from discord import Colour, Member, User, Guild
@@ -14,11 +14,23 @@ from redbot.core import Config, modlog, commands
 from redbot.core.bot import Red
 from redbot.core.commands import Context
 from redbot.core.data_manager import cog_data_path
+from redbot.core.utils.chat_formatting import humanize_list
 
 from ._common.interactions import Interactions, PageEmbedProvider
+from ._common.log_channels import (
+    CATEGORIES,
+    missing_send_permissions,
+    resolve_channel,
+    set_category_channel,
+    set_event_channel,
+)
 from ._common.modlog_render import build_case_embed
 
 log = logging.getLogger("red.vivi-cogs.modlog")
+
+#: Category assumed for a registration that didn't declare one -- most
+#: registrants are case-worthy moderator actions, so this is the common case.
+DEFAULT_CATEGORY = "modlog"
 
 
 class UnknownActionType(Exception):
@@ -36,18 +48,22 @@ class ModLog(commands.Cog):
         name: str
         color: Colour
         emoji: str | None
+        category: str
 
-        def __init__(self, *, type: str, name: str, color: Colour, emoji: str | None):
+        def __init__(
+            self, *, type: str, name: str, color: Colour, emoji: str | None, category: str = DEFAULT_CATEGORY
+        ):
             self.type = type
             self.name = name
             self.color = color
             self.emoji = emoji
+            self.category = category
 
     class Case:
         action_type: ModLog.ActionType
         case_number: int
         moderator: Member | User | int | None
-        target: Member | User | int
+        target: Member | User | int | None
         reason: str
         channel_id: int | None
         message_id: int | None
@@ -61,7 +77,7 @@ class ModLog(commands.Cog):
             action_type: ModLog.ActionType,
             case_number: int,
             moderator: Member | User | int | None,
-            target: Member | User | int,
+            target: Member | User | int | None,
             reason: str,
             timestamp: float,
             duration: str | None,
@@ -88,8 +104,12 @@ class ModLog(commands.Cog):
         def _identifier(who: Member | User | int | None) -> int | None:
             """Reduce a participant to a stored ID.
 
-            None is a legitimate moderator: nobody takes a topic-change request
-            by hand, and core modlog treats the moderator as optional too.
+            Used for both fields, and None is legitimate for either: a target
+            of None means a global or moderator-only action with no single
+            member it happened to (e.g. warning a whole channel), and a
+            moderator of None means an unattributed or automated one. Core
+            modlog treats its moderator as optional the same way, though it
+            has no way to represent a None target at all.
             """
             if who is None:
                 return None
@@ -130,7 +150,10 @@ class ModLog(commands.Cog):
             else:
                 moderator = guild.get_member(mod_id) or bot.get_user(mod_id) or mod_id
 
-            target = guild.get_member(target_id) or bot.get_user(target_id) or target_id
+            if target_id is None:
+                target = None
+            else:
+                target = guild.get_member(target_id) or bot.get_user(target_id) or target_id
 
             if data["action_type"] not in action_types:
                 raise UnknownActionType(data["action_type"])
@@ -196,10 +219,68 @@ class ModLog(commands.Cog):
             cases = len(self.member_cases)
             return int(ceil(cases / self.page_len)) if cases > self.page_len else 1
 
+    class ActionsPageEmbedProvider(PageEmbedProvider):
+        """Cases a member took as moderator, rather than cases taken against them.
+
+        A near-duplicate of `CasePageEmbedProvider` reading `moderator_cases`
+        instead of `user_cases` -- kept separate rather than parameterized,
+        since the two indexes and the two commands that read them are
+        conceptually distinct (what happened to someone vs. what they did) and
+        are likely to diverge further (e.g. a duration/severity summary makes
+        sense for actions and not for cases).
+        """
+
+        def __init__(self, cog: ModLog, ctx: Context, guild: Guild, member: Member) -> None:
+            self.cog = cog
+            self.ctx = ctx
+            self.guild = guild
+            self.member = member
+            self.page_len = 10
+            self.moderator_cases: List[int] = []
+
+        async def setup(self) -> None:
+            moderator_cases = self.cog.config.guild(self.guild).moderator_cases
+            self.moderator_cases = await moderator_cases.get_raw(str(self.member.id), default=[])
+
+        async def provide(self, page: int) -> discord.Embed:
+            end = len(self.moderator_cases) - (page - 1) * self.page_len
+            start = max(0, end - self.page_len)
+            case_ids = self.moderator_cases[start:end]
+
+            cases = self.cog.config.guild(self.guild).cases
+            content = ""
+
+            for case_id in reversed(case_ids):
+                raw = await cases.get_raw(str(case_id), default=None)
+                if raw is None:
+                    continue
+                try:
+                    case = self.cog.case_from_dict(self.guild, raw)
+                except UnknownActionType:
+                    content += f"`{raw['case_number']}` - `unknown action`\n"
+                    continue
+                emoji = case.action_type.emoji or ""
+                content += (
+                    f"`{case.case_number}` - {emoji}`{case.action_type.name}` "
+                    f"[<t:{int(case.timestamp)}:F>]\n"
+                )
+
+            return discord.Embed(
+                title=f"Actions taken by {self.member.name}",
+                description=content,
+                colour=await self.ctx.embed_color() or discord.Colour.blue(),
+            )
+
+        async def pages(self) -> int:
+            cases = len(self.moderator_cases)
+            return int(ceil(cases / self.page_len)) if cases > self.page_len else 1
+
     DEFAULT_GUILD = {
         "case_sequence": 1,
         "cases": {},
         "user_cases": {},
+        "moderator_cases": {},
+        "log_channels": {"categories": {category: None for category in CATEGORIES}, "events": {}},
     }
 
     DEFAULT_MEMBER: dict = {}
@@ -226,7 +307,13 @@ class ModLog(commands.Cog):
     ### ----------------------------------------------------------------
 
     def register_action_type(
-        self, *, type: str, name: str, color: Colour, emoji: str | None = None
+        self,
+        *,
+        type: str,
+        name: str,
+        color: Colour,
+        emoji: str | None = None,
+        category: str = DEFAULT_CATEGORY,
     ) -> None:
         """Register an action type this ModLog can create cases for.
 
@@ -234,9 +321,16 @@ class ModLog(commands.Cog):
         cog carries its own vendored copy of the shared helpers, so classes must
         never cross a cog boundary. Re-registering the same type overwrites it,
         which is what makes registration replay safe.
+
+        An unrecognized ``category`` is coerced to the default rather than
+        raising -- registration replay across a reload must stay best-effort.
         """
+        if category not in CATEGORIES:
+            log.warning("Unknown category %r for action type %s; using %r.", category, type, DEFAULT_CATEGORY)
+            category = DEFAULT_CATEGORY
+
         self._action_types[type] = ModLog.ActionType(
-            type=type, name=name, color=color, emoji=emoji
+            type=type, name=name, color=color, emoji=emoji, category=category
         )
 
     def action_type(self, action_type: str) -> ModLog.ActionType | None:
@@ -246,6 +340,28 @@ class ModLog(commands.Cog):
     def case_from_dict(self, guild: Guild, data: dict) -> ModLog.Case:
         """Rebuild a stored case against this instance's registry."""
         return ModLog.Case.from_dict(self.bot, guild, data, self._action_types)
+
+    async def cases_since(self, guild: Guild, since_timestamp: float) -> List[ModLog.Case]:
+        """Every case in ``guild`` created at or after ``since_timestamp``.
+
+        Reads the whole ``cases`` group, same as `CasePageEmbedProvider` --
+        acceptable here because this is a once-per-digest read, not something
+        called on every action the way `create_case` is.
+        """
+        raw = await self.config.guild(guild).cases()
+        cases = []
+
+        for data in raw.values():
+            if data.get("timestamp", 0.0) < since_timestamp:
+                continue
+            try:
+                cases.append(self.case_from_dict(guild, data))
+            except UnknownActionType:
+                # Belongs to a cog that isn't loaded right now. A digest can't
+                # name it, so it's skipped rather than shown as "unknown".
+                continue
+
+        return cases
 
     ### ----------------------------------------------------------------
     ### Rendering
@@ -320,12 +436,17 @@ class ModLog(commands.Cog):
         *,
         action_type: str,
         moderator: Member | User | int | None = None,
-        target: Member | User | int,
+        target: Member | User | int | None = None,
         reason: str | None = None,
         duration: str | None = None,
         attachments: List[Path] | None = None,
     ) -> ModLog.Case:
-        """Create, store, and post a modlog case."""
+        """Create, store, and post a modlog case.
+
+        ``target`` may be omitted for a global or moderator-only action with
+        no single member it happened to -- it is then simply not filed under
+        anyone's `[p]cases` history, only under the moderator's `[p]actions`.
+        """
 
         registered = self._action_types.get(action_type)
 
@@ -359,11 +480,20 @@ class ModLog(commands.Cog):
         # traffic turns into a real problem.
         await self.config.guild(guild).cases.set_raw(str(case_number), value=case.to_dict())
 
-        user_cases = self.config.guild(guild).user_cases
-        async with user_cases.get_lock():
-            member_cases = await user_cases.get_raw(str(target_id), default=[])
-            member_cases.append(case_number)
-            await user_cases.set_raw(str(target_id), value=member_cases)
+        if target_id is not None:
+            user_cases = self.config.guild(guild).user_cases
+            async with user_cases.get_lock():
+                member_cases = await user_cases.get_raw(str(target_id), default=[])
+                member_cases.append(case_number)
+                await user_cases.set_raw(str(target_id), value=member_cases)
+
+        moderator_id = ModLog.Case._identifier(moderator)
+        if moderator_id is not None:
+            moderator_cases = self.config.guild(guild).moderator_cases
+            async with moderator_cases.get_lock():
+                mod_cases = await moderator_cases.get_raw(str(moderator_id), default=[])
+                mod_cases.append(case_number)
+                await moderator_cases.set_raw(str(moderator_id), value=mod_cases)
 
         if case.attachments:
             await self._archive_attachments(case, case.attachments)
@@ -373,16 +503,27 @@ class ModLog(commands.Cog):
         return case
 
     async def _post_case(self, guild: Guild, case: ModLog.Case) -> None:
-        """Post a stored case to the modlog channel, if there is one.
+        """Post a stored case to a channel, if one resolves.
 
         Everything here is best-effort: the case is already recorded, and
-        `[p]case` works whether or not this succeeds.
+        `[p]case` works whether or not this succeeds. Checks this cog's own
+        per-event/category routing first, then falls back to Red core's single
+        guild-wide modlog channel, matching pre-routing behaviour when nothing
+        has been configured through `[p]modlogchannels`.
         """
-        try:
-            channel = await modlog.get_modlog_channel(guild)
-        except (discord.HTTPException, RuntimeError):
-            log.debug("No modlog channel is configured for guild %s.", guild.id)
-            return
+        channel = await resolve_channel(
+            guild,
+            self.config.guild(guild).log_channels,
+            action_type=case.action_type.type,
+            category=case.action_type.category,
+        )
+
+        if channel is None:
+            try:
+                channel = await modlog.get_modlog_channel(guild)
+            except (discord.HTTPException, RuntimeError):
+                log.debug("No modlog channel is configured for guild %s.", guild.id)
+                return
 
         if channel is None:
             return
@@ -538,3 +679,149 @@ class ModLog(commands.Cog):
                 member=target,
             ),
         )
+
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_guild=True)
+    @commands.hybrid_command("actions")
+    async def actions(self, ctx: commands.Context, moderator: Member) -> None:
+        """Returns moderator actions taken by a specific user.
+
+        A case is something that happened *to* someone (`[p]cases`); an action
+        is something a moderator *did* -- this reads that second index, which
+        every case with a moderator is filed under regardless of whether it
+        also has a target.
+        """
+
+        guild = ctx.guild
+
+        if not guild:
+            return
+
+        moderator_cases = self.config.guild(guild).moderator_cases
+        mod_cases = await moderator_cases.get_raw(str(moderator.id), default=[])
+
+        if not mod_cases:
+            await ctx.send(f"No actions found for `{moderator.name}`.", ephemeral=True)
+            return
+
+        await Interactions.page(
+            ctx=ctx,
+            provider=ModLog.ActionsPageEmbedProvider(
+                cog=self,
+                ctx=ctx,
+                guild=guild,
+                member=moderator,
+            ),
+        )
+
+    ### ----------------------------------------------------------------
+    ### Channel configuration
+    ### ----------------------------------------------------------------
+
+    async def _set_log_channel(
+        self, ctx: commands.Context, *, channel: Optional[discord.TextChannel], label: str, setter
+    ) -> None:
+        guild = ctx.guild
+
+        if channel is None:
+            await setter(None)
+            await ctx.send(f"{label} channel cleared.")
+            return
+
+        missing = await missing_send_permissions(guild, channel)
+        if missing:
+            await ctx.send(f"I need {humanize_list(missing)} in {channel.mention} first.")
+            return
+
+        await setter(channel.id)
+        await ctx.send(f"{label} channel set to {channel.mention}.")
+
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    @commands.group(name="modlogchannels")
+    async def modlogchannels(self, ctx: commands.Context) -> None:
+        """Configure which channels cases are posted to.
+
+        This is separate from Red core's `[p]modlogset modlog`, which remains
+        the last-resort fallback when nothing here resolves a channel.
+        """
+
+    @modlogchannels.command(name="category")
+    async def modlogchannels_category(
+        self, ctx: commands.Context, category: str, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        """Set (or clear) the default channel for a category of case."""
+        await self._modlogchannels_category(ctx, category, channel)
+
+    async def _modlogchannels_category(
+        self, ctx: commands.Context, category: str, channel: Optional[discord.TextChannel]
+    ) -> None:
+        category = category.lower()
+
+        if category not in CATEGORIES:
+            await ctx.send(f"Unknown category `{category}`. Choose one of: {humanize_list(list(CATEGORIES))}.")
+            return
+
+        guild = ctx.guild
+
+        async def setter(channel_id: Optional[int]) -> None:
+            await set_category_channel(self.config.guild(guild).log_channels, category, channel_id)
+
+        await self._set_log_channel(ctx, channel=channel, label=f"`{category}`", setter=setter)
+
+    @modlogchannels.command(name="event")
+    async def modlogchannels_event(
+        self, ctx: commands.Context, action_type: str, channel: Optional[discord.TextChannel] = None
+    ) -> None:
+        """Set (or clear) the channel a specific action type is posted to."""
+        await self._modlogchannels_event(ctx, action_type, channel)
+
+    async def _modlogchannels_event(
+        self, ctx: commands.Context, action_type: str, channel: Optional[discord.TextChannel]
+    ) -> None:
+        if action_type not in self._action_types:
+            known = humanize_list(sorted(self._action_types)) if self._action_types else "*none registered yet*"
+            await ctx.send(f"Unknown action type `{action_type}`. Currently registered: {known}.")
+            return
+
+        guild = ctx.guild
+
+        async def setter(channel_id: Optional[int]) -> None:
+            await set_event_channel(self.config.guild(guild).log_channels, action_type, channel_id)
+
+        await self._set_log_channel(ctx, channel=channel, label=f"`{action_type}`", setter=setter)
+
+    @modlogchannels.command(name="settings")
+    async def modlogchannels_settings(self, ctx: commands.Context) -> None:
+        """Show the current channel routing configuration."""
+        await self._modlogchannels_settings(ctx)
+
+    async def _modlogchannels_settings(self, ctx: commands.Context) -> None:
+        conf = await self.config.guild(ctx.guild).log_channels()
+
+        def render_channel(channel_id: Optional[int]) -> str:
+            channel = ctx.guild.get_channel(channel_id) if channel_id else None
+            return channel.mention if channel else "*not set*"
+
+        embed = discord.Embed(title="Modlog channel routing", colour=await ctx.embed_colour())
+
+        embed.add_field(
+            name="Categories",
+            value="\n".join(
+                f"`{category}`: {render_channel(conf['categories'].get(category))}" for category in CATEGORIES
+            ),
+            inline=False,
+        )
+
+        events = conf.get("events", {})
+        embed.add_field(
+            name="Event overrides",
+            value=(
+                "\n".join(f"`{event}`: {render_channel(channel_id)}" for event, channel_id in sorted(events.items()))
+                if events
+                else "*none set*"
+            ),
+            inline=False,
+        )
+
+        await ctx.send(embed=embed)

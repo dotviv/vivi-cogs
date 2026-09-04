@@ -30,7 +30,7 @@ def build_case_embed(
     *,
     action_name: str,
     action_color: discord.Colour,
-    target: Member | User | int,
+    target: Member | User | int | None,
     reason: str,
     timestamp: float,
     action_emoji: str | None = None,
@@ -42,7 +42,10 @@ def build_case_embed(
     """Render one log entry.
 
     ``case_number`` is optional so that events which are deliberately not cases
-    still render in the same shape, minus the case field.
+    still render in the same shape, minus the case field. ``target`` is
+    optional too, for a global or moderator-only action with no single member
+    it happened to -- the Target field is omitted entirely rather than shown
+    as unavailable, since there was never one to begin with.
 
     ``detailed`` adds the raw IDs and always shows a duration; it is what
     ``[p]case`` uses. The compact form is what gets posted to the channel.
@@ -69,16 +72,17 @@ def build_case_embed(
             if detailed:
                 embed.add_field(name="Moderator ID:", value=f"`{moderator}`", inline=False)
 
-    if isinstance(target, (Member, User)):
-        embed.add_field(name="Target:", value=f"`{target.name}`🎯", inline=False)
-        if detailed:
-            embed.add_field(name="Target ID:", value=f"`{target.id}`", inline=False)
-        embed.set_thumbnail(url=target.display_avatar.url)
-    else:
-        label = "`Unavailable`🎯" if detailed else f"`{target}`🎯"
-        embed.add_field(name="Target:", value=label, inline=False)
-        if detailed:
-            embed.add_field(name="Target ID:", value=f"`{target}`", inline=False)
+    if target is not None:
+        if isinstance(target, (Member, User)):
+            embed.add_field(name="Target:", value=f"`{target.name}`🎯", inline=False)
+            if detailed:
+                embed.add_field(name="Target ID:", value=f"`{target.id}`", inline=False)
+            embed.set_thumbnail(url=target.display_avatar.url)
+        else:
+            label = "`Unavailable`🎯" if detailed else f"`{target}`🎯"
+            embed.add_field(name="Target:", value=label, inline=False)
+            if detailed:
+                embed.add_field(name="Target ID:", value=f"`{target}`", inline=False)
 
     if detailed:
         embed.add_field(name="Duration:", value=f"`{duration or 'Not specified.'}`⏳", inline=False)

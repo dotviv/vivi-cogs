@@ -77,7 +77,7 @@ class CaseRef:
     action_name: str
     action_color: Colour
     action_emoji: str | None
-    target: Member | User | int
+    target: Member | User | int | None
     reason: str
     timestamp: float
     case_number: int | None = None
@@ -226,13 +226,19 @@ class ModLogProxy:
         guild: Guild,
         *,
         action_type: str,
-        target: Member | User | int,
+        target: Member | User | int | None = None,
         moderator: Member | User | int | None = None,
         reason: str | None = None,
         duration: str | None = None,
         attachments: List[Path] | None = None,
     ) -> CaseRef | None:
         """Record a case, using ModLog if present and core modlog otherwise.
+
+        ``target`` may be omitted for a global or moderator-only action with
+        no single member it happened to -- ModLog still records and posts it,
+        filed under the moderator's ``[p]actions`` rather than anyone's
+        ``[p]cases``. Core cannot represent this at all; see
+        :meth:`_create_core_case`.
 
         Returns None when neither backend recorded anything -- ModLog absent
         with ``core_fallback`` off, core refusing the casetype, or the casetype
@@ -251,19 +257,7 @@ class ModLogProxy:
                 duration=duration,
                 attachments=attachments,
             )
-            return CaseRef(
-                action_type=case.action_type.type,
-                action_name=case.action_type.name,
-                action_color=case.action_type.color,
-                action_emoji=case.action_type.emoji,
-                case_number=case.case_number,
-                moderator=case.moderator,
-                target=case.target,
-                reason=case.reason,
-                timestamp=case.timestamp,
-                duration=case.duration,
-                source="modlog",
-            )
+            return self._case_ref_from_modlog_case(case)
 
         if not self.core_fallback:
             log.debug(
@@ -287,12 +281,23 @@ class ModLogProxy:
         guild: Guild,
         *,
         action_type: str,
-        target: Member | User | int,
+        target: Member | User | int | None,
         moderator: Member | User | int | None,
         reason: str | None,
         duration: str | None,
         attachments: List[Path] | None,
     ) -> CaseRef | None:
+        if target is None:
+            # Core's create_case takes the target as a required positional
+            # argument -- there is no way to represent a targetless entry, so
+            # this degrades the same way a disabled or unregistered casetype
+            # does: log it, record nothing.
+            log.debug(
+                "Core modlog requires a target, so no case was recorded for the "
+                "targetless %s action.", action_type
+            )
+            return None
+
         if attachments:
             # Core modlog cannot attach anything to a case. Losing a quarantine
             # transcript silently would be worse than the degraded log line.
@@ -333,6 +338,48 @@ class ModLogProxy:
             log.debug("Core casetype %s is disabled in guild %s.", action_type, guild.id)
             return None
 
+        return self._case_ref_from_core_case(
+            case,
+            action_type=action_type,
+            moderator=moderator,
+            target=target,
+            reason=reason,
+            duration=duration,
+        )
+
+    def _case_ref_from_modlog_case(self, case) -> CaseRef:
+        """Build a ``CaseRef`` from a live ModLog ``Case`` instance."""
+        return CaseRef(
+            action_type=case.action_type.type,
+            action_name=case.action_type.name,
+            action_color=case.action_type.color,
+            action_emoji=case.action_type.emoji,
+            case_number=case.case_number,
+            moderator=case.moderator,
+            target=case.target,
+            reason=case.reason,
+            timestamp=case.timestamp,
+            duration=case.duration,
+            source="modlog",
+        )
+
+    def _case_ref_from_core_case(
+        self,
+        case,
+        *,
+        action_type: str,
+        moderator: Member | User | int | None,
+        target: Member | User | int,
+        reason: str | None,
+        duration: str | None,
+    ) -> CaseRef:
+        """Build a ``CaseRef`` from a core-modlog ``Case`` instance.
+
+        Core's own object already carries the target/moderator/reason it
+        stored, but callers of ``create_case`` know theirs precisely and a
+        freshly created case may not have them resolved to full objects yet,
+        so the values passed in are preferred over re-reading the case.
+        """
         display = self._display(action_type)
         created_at = getattr(case, "created_at", None)
 
@@ -357,6 +404,50 @@ class ModLogProxy:
             source="core",
         )
 
+    async def recent_cases(self, guild: Guild, *, since: datetime.datetime) -> List[CaseRef]:
+        """Every case created in ``guild`` at or after ``since``.
+
+        Reads whichever backend is live. Unlike :meth:`create_case`, this
+        always reads core modlog when ModLog is absent, regardless of
+        ``core_fallback``: that flag exists to stop a *new* case from becoming
+        readable through core's own ungated ``[p]case``/``[p]casesfor``, which
+        does not apply to a case that already exists there. A caller reading
+        case history through its own mod-gated command adds no visibility
+        core did not already have.
+        """
+        modlog = self.cog_instance
+        since_ts = since.timestamp()
+
+        if modlog is not None:
+            cases = await modlog.cases_since(guild, since_ts)
+            return [self._case_ref_from_modlog_case(case) for case in cases]
+
+        cases = await core_modlog.get_all_cases(guild, self.bot)
+        refs = []
+
+        for case in cases:
+            created_at = getattr(case, "created_at", None)
+            if isinstance(created_at, datetime.datetime):
+                timestamp = created_at.timestamp()
+            else:
+                timestamp = float(created_at or 0)
+
+            if timestamp < since_ts:
+                continue
+
+            refs.append(
+                self._case_ref_from_core_case(
+                    case,
+                    action_type=case.action_type,
+                    moderator=getattr(case, "moderator", None),
+                    target=case.user,
+                    reason=getattr(case, "reason", None),
+                    duration=None,
+                )
+            )
+
+        return refs
+
     ### ----------------------------------------------------------------
     ### Events
     ### ----------------------------------------------------------------
@@ -366,10 +457,11 @@ class ModLogProxy:
         guild: Guild,
         *,
         action_type: str,
-        target: Member | User | int,
+        target: Member | User | int | None = None,
         reason: str,
         moderator: Member | User | int | None = None,
         timestamp: float | None = None,
+        channel: discord.abc.Messageable | None = None,
     ) -> bool:
         """Post a log entry that is deliberately not a case.
 
@@ -377,8 +469,12 @@ class ModLogProxy:
         member's permanent record. Renders identically to a case minus the case
         number, and needs no backend at all -- it posts straight to the guild's
         modlog channel, so it behaves the same whether ModLog is loaded or not.
+
+        ``channel`` overrides the destination, for a caller that keeps its own
+        dedicated channel per event category rather than sharing the single
+        guild-wide modlog channel.
         """
-        channel = await self._modlog_channel(guild)
+        channel = channel or await self._modlog_channel(guild)
 
         if channel is None:
             return False

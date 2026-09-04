@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import unittest
 
 import discord
@@ -119,6 +120,34 @@ class TestRegistrationReplay(ProxyTestCase):
         await self.proxy.on_cog_add(reloaded)
         self.assertIsNotNone(reloaded.action_type("warn"))
 
+    async def test_category_is_forwarded_when_declared(self):
+        """refresh() passes any extra declared key straight through to
+        register_action_type, so a category travels with the type."""
+        modlog = self.load_modlog()
+        proxy = ModLogProxy(
+            self.cog,
+            action_types=(
+                {
+                    "type": "raid_alert",
+                    "name": "Raid Alert",
+                    "color": discord.Colour.red(),
+                    "emoji": "🚨",
+                    "category": "adminlog",
+                },
+            ),
+        )
+
+        await proxy.refresh()
+
+        self.assertEqual(modlog.action_type("raid_alert").category, "adminlog")
+
+    async def test_omitting_category_still_registers(self):
+        """A declaration with no category must not break registration."""
+        modlog = self.load_modlog()
+        await self.proxy.refresh()
+
+        self.assertEqual(modlog.action_type("warn").category, "modlog")
+
     async def test_unrelated_cogs_are_ignored(self):
         modlog = self.load_modlog()
         await self.proxy.refresh()
@@ -145,6 +174,18 @@ class TestCaseRouting(ProxyTestCase):
         self.assertEqual(ref.case_number, 1)
         self.assertEqual(ref.action_name, "Warning")
         self.assertEqual(self.core.created, [])
+
+    async def test_modlog_still_records_a_targetless_case(self):
+        """Unlike core, ModLog can represent a moderator-only action."""
+        self.load_modlog()
+        await self.proxy.refresh()
+
+        ref = await self.proxy.create_case(
+            self.guild, action_type="warn", moderator=111, reason="channel-wide warning"
+        )
+
+        self.assertIsInstance(ref, CaseRef)
+        self.assertIsNone(ref.target)
 
     async def test_caseref_is_not_modlogs_case(self):
         """Each cog vendors its own copy of the helpers, so ModLog's classes are
@@ -213,7 +254,17 @@ class TestFallbackPolicy(ProxyTestCase):
 
 
 class TestCoreFailureModes(ProxyTestCase):
-    """Core has three distinct ways to not produce a case. None may propagate."""
+    """Core has four distinct ways to not produce a case. None may propagate."""
+
+    async def test_targetless_case_returns_none_without_calling_core(self):
+        """Core's create_case takes the target as a required positional
+        argument, so a targetless action never even reaches it."""
+        result = await self.proxy.create_case(
+            self.guild, action_type="warn", moderator=111, reason="x"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(self.core.created, [])
 
     async def test_disabled_casetype_returns_none(self):
         self.core.create_result = None
@@ -267,6 +318,85 @@ class TestEvents(ProxyTestCase):
         )
 
         self.assertFalse(posted)
+
+    async def test_channel_override_bypasses_core_resolution(self):
+        """A caller with its own dedicated channel must not be at the mercy of
+        whatever (or nothing) core has configured as the guild's modlog channel."""
+        self.core.channel = None
+        override = RecordingChannel()
+
+        posted = await self.proxy.log_event(
+            self.guild, action_type="warn", target=222, reason="x", channel=override
+        )
+
+        self.assertTrue(posted)
+        self.assertEqual(len(override.sent), 1)
+
+    async def test_omitting_the_channel_preserves_current_behaviour(self):
+        self.core.channel = RecordingChannel()
+
+        posted = await self.proxy.log_event(
+            self.guild, action_type="warn", target=222, reason="x"
+        )
+
+        self.assertTrue(posted)
+        self.assertEqual(len(self.core.channel.sent), 1)
+
+
+class TestRecentCases(ProxyTestCase):
+    EPOCH = datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc)
+    FAR_FUTURE = datetime.datetime.fromtimestamp(9999999999, tz=datetime.timezone.utc)
+
+    async def test_reads_from_modlog_when_present(self):
+        self.load_modlog()
+        await self.proxy.refresh()
+        await self.proxy.create_case(
+            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+        )
+
+        refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
+
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].source, "modlog")
+
+    async def test_excludes_cases_before_the_window(self):
+        self.load_modlog()
+        await self.proxy.refresh()
+        await self.proxy.create_case(
+            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+        )
+
+        refs = await self.proxy.recent_cases(self.guild, since=self.FAR_FUTURE)
+
+        self.assertEqual(refs, [])
+
+    async def test_reads_from_core_when_modlog_absent(self):
+        await self.proxy.create_case(
+            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+        )
+
+        refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
+
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].source, "core")
+
+    async def test_reads_from_core_even_when_core_fallback_is_off(self):
+        """core_fallback governs whether a *new* case may become readable
+        through core's ungated lookups. Reading a case that already exists
+        there adds no visibility core did not already have."""
+        await self.proxy.create_case(
+            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+        )
+        private = ModLogProxy(self.cog, action_types=ACTION_TYPES, core_fallback=False)
+
+        refs = await private.recent_cases(self.guild, since=self.EPOCH)
+
+        self.assertEqual(len(refs), 1)
+
+    async def test_nothing_to_read_is_an_empty_list(self):
+        refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
+
+        self.assertEqual(refs, [])
 
 
 class TestSummaries(ProxyTestCase):

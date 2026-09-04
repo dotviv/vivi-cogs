@@ -3,7 +3,7 @@
     "name": "moderation",
     "install_msg": "Thank you for installing moderation!",
     "short": "Ban, kick, warn, with better action verification and modlog integration.",
-    "description": "Ban, kick, warn, with better action verification. All actions give proper verification / feedback so you can feel confident in your actions. Cases are recorded through vivi-cogs/ModLog when it is installed, and fall back to Red's core modlog when it is not.",
+    "description": "Ban, kick, warn, with better action verification. All actions give proper verification / feedback so you can feel confident in your actions. Cases are recorded through vivi-cogs/ModLog when it is installed, and fall back to Red's core modlog when it is not. When ModLog is installed, its `[p]modlogchannels` command routes these cases to their own channels.",
     "tags": [
         "moderation"
     ],
