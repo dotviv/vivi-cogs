@@ -30,11 +30,15 @@ def build_case_embed(
     *,
     action_name: str,
     action_color: discord.Colour,
+    target_label: str,
     target: Member | User | int | None,
-    reason: str,
+    target_emoji: str | None = None,
+    reason: str | None = None,
     timestamp: float,
     action_emoji: str | None = None,
+    actor_label: str,
     actor: Member | User | int | None = None,
+    actor_emoji: str | None = None,
     duration: str | None = None,
     case_number: int | None = None,
     detailed: bool = False,
@@ -63,32 +67,33 @@ def build_case_embed(
 
     if actor is not None:
         if isinstance(actor, (Member, User)):
-            embed.add_field(name="Actor:", value=f"`{actor.name}`🛡", inline=not detailed)
+            embed.add_field(name=f"{actor_label}:", value=f"`{actor.name}`{actor_emoji or ''}", inline=not detailed)
             if detailed:
-                embed.add_field(name="Actor ID:", value=f"`{actor.id}`", inline=False)
+                embed.add_field(name=f"{actor_label} ID:", value=f"`{actor.id}`", inline=False)
         else:
-            label = "`Unavailable`🛡" if detailed else f"`{actor}`🛡"
-            embed.add_field(name="Actor:", value=label, inline=not detailed)
+            label = f"`Unavailable`{actor_emoji or ''}" if detailed else f"`{actor}`{actor_emoji or ''}"
+            embed.add_field(name=f"{actor_label}:", value=label, inline=not detailed)
             if detailed:
-                embed.add_field(name="Actor ID:", value=f"`{actor}`", inline=False)
+                embed.add_field(name=f"{actor_label} ID:", value=f"`{actor}`", inline=False)
 
     if target is not None:
         if isinstance(target, (Member, User)):
-            embed.add_field(name="Target:", value=f"`{target.name}`🎯", inline=False)
+            embed.add_field(name=f"{target_label}:", value=f"`{target.name}`{target_emoji or ''}", inline=False)
             if detailed:
                 embed.add_field(name="Target ID:", value=f"`{target.id}`", inline=False)
             embed.set_thumbnail(url=target.display_avatar.url)
         else:
-            label = "`Unavailable`🎯" if detailed else f"`{target}`🎯"
-            embed.add_field(name="Target:", value=label, inline=False)
+            label = f"`Unavailable`{target_emoji or ''}" if detailed else f"`{target}`{target_emoji or ''}"
+            embed.add_field(name=f"{target_label}:", value=label, inline=False)
             if detailed:
-                embed.add_field(name="Target ID:", value=f"`{target}`", inline=False)
+                embed.add_field(name=f"{target_label} ID:", value=f"`{target}`", inline=False)
 
     if detailed:
         embed.add_field(name="Duration:", value=f"`{duration or 'Not specified.'}`⏳", inline=False)
     elif duration:
         embed.add_field(name="Duration:", value=f"`{duration}`⏳", inline=False)
 
-    embed.add_field(name="Reason:", value=reason, inline=False)
+    if reason:
+        embed.add_field(name="Reason:", value=reason, inline=False)
 
     return embed

@@ -74,7 +74,7 @@ class CaseRef:
     reason: str
     timestamp: float
     case_number: int | None = None
-    moderator: Member | User | int | None = None
+    actor: Member | User | int | None = None
     duration: str | None = None
 
     #: Which backend recorded this: "modlog", "core", or "none" for an event
@@ -132,7 +132,7 @@ class ModLogProxy:
 
         Red's core modlog has no equivalent, so callers with something to
         attach -- a quarantine transcript, say -- should check this and tell
-        the moderator when it will not be retained.
+        the actor when it will not be retained.
         """
         return self.available
 
@@ -220,16 +220,16 @@ class ModLogProxy:
         *,
         action_type: str,
         target: Member | User | int | None = None,
-        moderator: Member | User | int | None = None,
+        actor: Member | User | int | None = None,
         reason: str | None = None,
         duration: str | None = None,
         attachments: List[Path] | None = None,
     ) -> CaseRef | None:
         """Record a case, using ModLog if present and core modlog otherwise.
 
-        ``target`` may be omitted for a global or moderator-only action with
+        ``target`` may be omitted for a global or actor-only action with
         no single member it happened to -- ModLog still records and posts it,
-        filed under the moderator's ``[p]actions`` rather than anyone's
+        filed under the actor's ``[p]actions`` rather than anyone's
         ``[p]cases``. Core cannot represent this at all; see
         :meth:`_create_core_case`.
 
@@ -245,7 +245,7 @@ class ModLogProxy:
                 guild,
                 action_type=action_type,
                 target=target,
-                moderator=moderator,
+                actor=actor,
                 reason=reason,
                 duration=duration,
                 attachments=attachments,
@@ -263,7 +263,7 @@ class ModLogProxy:
             guild,
             action_type=action_type,
             target=target,
-            moderator=moderator,
+            actor=actor,
             reason=reason,
             duration=duration,
             attachments=attachments,
@@ -275,7 +275,7 @@ class ModLogProxy:
         *,
         action_type: str,
         target: Member | User | int | None,
-        moderator: Member | User | int | None,
+        actor: Member | User | int | None,
         reason: str | None,
         duration: str | None,
         attachments: List[Path] | None,
@@ -313,7 +313,7 @@ class ModLogProxy:
                 datetime.datetime.now(datetime.timezone.utc),
                 action_type,
                 target,
-                moderator=moderator,
+                actor=actor,
                 reason=reason,
             )
         except ValueError:
@@ -334,7 +334,7 @@ class ModLogProxy:
         return self._case_ref_from_core_case(
             case,
             action_type=action_type,
-            moderator=moderator,
+            actor=actor,
             target=target,
             reason=reason,
             duration=duration,
@@ -348,7 +348,7 @@ class ModLogProxy:
             action_color=case.action_type.color,
             action_emoji=case.action_type.emoji,
             case_number=case.case_number,
-            moderator=case.moderator,
+            actor=case.actor,
             target=case.target,
             reason=case.reason,
             timestamp=case.timestamp,
@@ -361,14 +361,14 @@ class ModLogProxy:
         case,
         *,
         action_type: str,
-        moderator: Member | User | int | None,
+        actor: Member | User | int | None,
         target: Member | User | int,
         reason: str | None,
         duration: str | None,
     ) -> CaseRef:
         """Build a ``CaseRef`` from a core-modlog ``Case`` instance.
 
-        Core's own object already carries the target/moderator/reason it
+        Core's own object already carries the target/actor/reason it
         stored, but callers of ``create_case`` know theirs precisely and a
         freshly created case may not have them resolved to full objects yet,
         so the values passed in are preferred over re-reading the case.
@@ -389,7 +389,7 @@ class ModLogProxy:
             action_color=display["color"],
             action_emoji=display["emoji"],
             case_number=getattr(case, "case_number", None),
-            moderator=moderator,
+            actor=actor,
             target=target,
             reason=reason or "",
             timestamp=timestamp,
@@ -432,7 +432,7 @@ class ModLogProxy:
                 self._case_ref_from_core_case(
                     case,
                     action_type=case.action_type,
-                    moderator=getattr(case, "moderator", None),
+                    actor=getattr(case, "actor", None),
                     target=case.user,
                     reason=getattr(case, "reason", None),
                     duration=None,
@@ -452,13 +452,13 @@ class ModLogProxy:
         action_type: str,
         target: Member | User | int | None = None,
         reason: str,
-        moderator: Member | User | int | None = None,
+        actor: Member | User | int | None = None,
         timestamp: float | None = None,
         channel: discord.abc.Messageable | None = None,
     ) -> bool:
         """Post a log entry that is deliberately not a case.
 
-        For things worth a moderator's attention that do not belong in a
+        For things worth a actor's attention that do not belong in a
         member's permanent record. Renders identically to a case minus the case
         number, and needs no backend at all -- it posts straight to the guild's
         modlog channel, so it behaves the same whether ModLog is loaded or not.
@@ -479,7 +479,7 @@ class ModLogProxy:
             action_color=display["color"],
             action_emoji=display["emoji"],
             target=target,
-            moderator=moderator,
+            actor=actor,
             reason=reason,
             timestamp=timestamp or datetime.datetime.now(datetime.timezone.utc).timestamp(),
         )
@@ -500,7 +500,7 @@ class ModLogProxy:
             return None
 
     ### ----------------------------------------------------------------
-    ### Moderator feedback
+    ### Actor feedback
     ### ----------------------------------------------------------------
 
     async def confirm_action(
@@ -515,7 +515,7 @@ class ModLogProxy:
         timeout: int = 30,
         ephemeral: bool = True,
     ) -> bool:
-        """Ask the moderator to confirm an action before it is carried out.
+        """Ask the actor to confirm an action before it is carried out.
 
         Pure UI -- it needs no backend, only the action's display name, which
         the proxy can always resolve from its own declarations.
@@ -569,10 +569,10 @@ class ModLogProxy:
         note: str | None = None,
         ephemeral: bool = True,
     ) -> None:
-        """Report a completed action back to the moderator who carried it out."""
+        """Report a completed action back to the actor who carried it out."""
 
         # A case is not guaranteed: ModLog may be absent, the core fallback may
-        # be off or disabled. The action itself still happened, so the moderator
+        # be off or disabled. The action itself still happened, so the actor
         # still needs to hear about it.
 
         if case is None:
@@ -589,7 +589,7 @@ class ModLogProxy:
             action_color=case.action_color,
             action_emoji=case.action_emoji,
             case_number=case.case_number,
-            moderator=case.moderator,
+            actor=case.actor,
             target=case.target,
             reason=case.reason,
             timestamp=case.timestamp,

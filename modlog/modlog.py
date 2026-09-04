@@ -49,22 +49,34 @@ class ModLog(commands.Cog):
         color: Colour
         emoji: str | None
         category: str
+        requires_reason: bool
+        target_label: str
+        target_emoji: str
+        actor_label: str
+        actor_emoji: str
 
         def __init__(
-            self, *, type: str, name: str, color: Colour, emoji: str | None, category: str = DEFAULT_CATEGORY
+            self, *, type: str, name: str, color: Colour, emoji: str | None, category: str = DEFAULT_CATEGORY,
+                requires_reason: bool = False,
+                target_label: str = "Target", target_emoji: str = "🎯", actor_label: str = "Actor", actor_emoji: str = "🛡️"
         ):
             self.type = type
             self.name = name
             self.color = color
             self.emoji = emoji
             self.category = category
+            self.requires_reason = requires_reason
+            self.target_label = target_label
+            self.target_emoji = target_emoji
+            self.actor_label = actor_label
+            self.actor_emoji = actor_emoji
 
     class Case:
         action_type: ModLog.ActionType
         case_number: int
         actor: Member | User | int | None
         target: Member | User | int | None
-        reason: str
+        reason: str | None
         channel_id: int | None
         message_id: int | None
         timestamp: float
@@ -78,7 +90,7 @@ class ModLog(commands.Cog):
             case_number: int,
             actor: Member | User | int | None,
             target: Member | User | int | None,
-            reason: str,
+            reason: str | None,
             timestamp: float,
             duration: str | None,
             attachments: List[Path] | None = None,
@@ -384,8 +396,12 @@ class ModLog(commands.Cog):
             action_color=case.action_type.color,
             action_emoji=case.action_type.emoji,
             case_number=case.case_number,
+            actor_label=case.action_type.actor_label,
             actor=case.actor,
+            actor_emoji=case.action_type.actor_emoji,
+            target_label=case.action_type.target_label,
             target=case.target,
+            target_emoji=case.action_type.target_emoji,
             reason=case.reason,
             timestamp=case.timestamp,
             duration=case.duration,
@@ -464,13 +480,15 @@ class ModLog(commands.Cog):
 
         case_number = await self._next_case_number(guild)
 
+        if not reason and registered.requires_reason:
+            reason = f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case."
+
         case = ModLog.Case(
             action_type=registered,
             case_number=case_number,
             actor=actor,
             target=resolved_target,
-            reason=reason
-            or f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case.",
+            reason=reason,
             timestamp=datetime.datetime.now(datetime.timezone.utc).timestamp(),
             duration=duration,
             attachments=attachments,
