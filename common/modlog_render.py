@@ -93,14 +93,12 @@ def build_case_embed(
     if target is not None:
         if isinstance(target, (Member, User)):
             embed.add_field(name=f"{target_label}:", value=f"`{target.name}`{target_emoji or ''}", inline=False)
-            if detailed:
-                embed.add_field(name=f"{target_label} ID:", value=f"`{target.id}`", inline=False)
+            embed.add_field(name=f"{target_label} ID:", value=f"`{target.id}`", inline=False)
             embed.set_thumbnail(url=target.display_avatar.url)
         else:
             label = f"`Unavailable`{target_emoji or ''}" if detailed else f"`{target}`{target_emoji or ''}"
             embed.add_field(name=f"{target_label}:", value=label, inline=False)
-            if detailed:
-                embed.add_field(name=f"{target_label} ID:", value=f"`{target}`", inline=False)
+            embed.add_field(name=f"{target_label} ID:", value=f"`{target}`", inline=False)
 
     if detailed:
         embed.add_field(name="Duration:", value=f"`{duration or 'Not specified.'}`⏳", inline=False)
