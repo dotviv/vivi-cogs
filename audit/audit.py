@@ -232,8 +232,10 @@ class Audit(commands.Cog):
             content_fields = [field("Note", "Message content unavailable (not cached).")]
 
         jump_url = f"https://discord.com/channels/{guild.id}/{payload.channel_id}/{payload.message_id}"
+
         fields = [
-            field("Message ID", str(payload.message_id)),
+            field(f"Channel", f"{channel.mention}"),
+            field("Message ID", f"`{str(payload.message_id)}`"),
             *content_fields,
             field("Jump to message", f"[Jump]({jump_url})"),
         ]
@@ -280,8 +282,9 @@ class Audit(commands.Cog):
             action_type="message_deleted",
             actor=cached.author,
             fields=[
+                field(f"Channel", f"{channel.mention}"),
                 field("Message ID", str(payload.message_id)),
-                field("Content", f"Deleted in {location}.\n{content}"),
+                field("Content", f"{content}"),
             ],
             channel=channel,
         )
