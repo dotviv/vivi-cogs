@@ -50,23 +50,23 @@ class Audit(commands.Cog):
     # these -- none of them are ever passed to `create_case`.
     ACTION_TYPES = (
         {"type": "message_edited", "name": "Message Edited",
-         "color": discord.Colour.orange(), "emoji": "✏️", "category": "memberlog", "actor_label": "Member"},
+         "color": discord.Colour.orange(), "emoji": "✏️", "category": "memberlog"},
         {"type": "message_deleted", "name": "Message Deleted",
-         "color": discord.Colour.red(), "emoji": "🗑️", "category": "memberlog", "actor_label": "Member"},
+         "color": discord.Colour.red(), "emoji": "🗑️", "category": "memberlog"},
         {"type": "channel_created", "name": "Channel Created",
-         "color": discord.Colour.green(), "emoji": "📁", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.green(), "emoji": "📁", "category": "adminlog"},
         {"type": "channel_updated", "name": "Channel Updated",
-         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog"},
         {"type": "channel_deleted", "name": "Channel Deleted",
-         "color": discord.Colour.red(), "emoji": "🗑️", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.red(), "emoji": "🗑️", "category": "adminlog"},
         {"type": "role_created", "name": "Role Created",
-         "color": discord.Colour.green(), "emoji": "🏷️", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.green(), "emoji": "🏷️", "category": "adminlog"},
         {"type": "role_updated", "name": "Role Updated",
-         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog"},
         {"type": "role_deleted", "name": "Role Deleted",
-         "color": discord.Colour.red(), "emoji": "🏷️", "category": "adminlog", "actor_label": "Admin"},
+         "color": discord.Colour.red(), "emoji": "🏷️", "category": "adminlog"},
         {"type": "member_roles_changed", "name": "Member Roles Changed",
-         "color": discord.Colour.blurple(), "emoji": "🧩", "category": "memberlog", "actor_label": "Admin"},
+         "color": discord.Colour.blurple(), "emoji": "🧩", "category": "memberlog"},
     )
 
     #: Categories audit actually emits events into -- "modlog" is deliberately

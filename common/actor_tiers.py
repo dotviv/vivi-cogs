@@ -26,12 +26,21 @@ import discord
 
 from redbot.core.utils.mod import is_admin_or_superior, is_mod_or_superior
 
-BOT = ("Bot", "🤖")
-OWNER = ("Owner", "👑")
-ADMIN = ("Admin", "⚔️")
-MODERATOR = ("Moderator", "🛡️")
-MEMBER = ("Member", "👤")
-USER = ("User", "👤")
+# We moved all of these to just say "Actor" beecause, while we can resolve custom names,
+# we decided that it's weird seeing different labels in different posts depending on
+# who initiated it Admin in one log and Moderator in the next.
+#
+# Instead, we will refer to *everyone* as an Actor, and let the emoji dictate who they
+# are to us, what their rank is, etc. This way we always know the Actor is labeled Actor.
+#
+# Individual cogs can still override this.
+
+BOT = ("Actor", "🤖")
+OWNER = ("Actor", "👑")
+ADMIN = ("Actor", "⚔️")
+MODERATOR = ("Actor", "🛡️")
+MEMBER = ("Actor", "👤")
+USER = ("Actor", "👤")
 
 
 async def _dynamic_tier(
