@@ -34,8 +34,8 @@ class _ExplodingBot(FakeBot):
 
 
 class TestConfiguredOverride(ActorTiersTestCase):
-    async def test_configured_label_short_circuits_everything(self):
-        """A configured label returns immediately -- proven by handing it an
+    async def test_configured_label_and_emoji_short_circuits_everything(self):
+        """Configuring both returns immediately -- proven by handing it an
         actor whose bot would raise if any privilege check were attempted."""
         self.bot = _ExplodingBot()
         owner = FakeMember(100, "owner", self.guild)
@@ -43,6 +43,25 @@ class TestConfiguredOverride(ActorTiersTestCase):
         label, emoji = await self.resolve(owner, configured_label="Requester", configured_emoji="🙋")
 
         self.assertEqual((label, emoji), ("Requester", "🙋"))
+
+    async def test_configured_label_alone_still_resolves_a_dynamic_emoji(self):
+        """A fixed label (e.g. an action type that always calls its actor
+        "Member") says nothing about the actor's real tier -- the emoji
+        should still reflect it, here an admin's ⚔️ rather than a plain 👤."""
+        admin = FakeMember(200, "admin", self.guild)
+        self.bot.admin_ids.add(200)
+
+        label, emoji = await self.resolve(admin, configured_label="Member")
+
+        self.assertEqual((label, emoji), ("Member", "⚔️"))
+
+    async def test_configured_emoji_alone_still_resolves_a_dynamic_label(self):
+        mod = FakeMember(300, "mod", self.guild)
+        self.bot.mod_ids.add(300)
+
+        label, emoji = await self.resolve(mod, configured_emoji="🔧")
+
+        self.assertEqual((label, emoji), ("Moderator", "🔧"))
 
 
 class TestTierLadder(ActorTiersTestCase):

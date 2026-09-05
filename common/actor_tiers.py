@@ -1,10 +1,17 @@
 """Dynamic actor display: what badge an actor's case gets when nobody configured one.
 
-An action type may set an explicit ``actor_label``/``actor_emoji`` (Topics wants
-every request filed under "Requester"/🙋, say) -- that always wins, and costs nothing
-extra. Absent that, the badge is resolved from the actor's real standing in the
-guild: an automated action reads as the bot, a human's badge follows the same
-owner/admin/mod/member ladder Red itself uses for permission checks.
+The label and the emoji answer different questions, and are resolved
+independently. The label names what the field represents -- an action type may
+pin it to something fixed (Topics wants every request filed under "Requester",
+say), regardless of who the actor turns out to be. The emoji says what tier
+that actor actually holds right now: an automated action reads as the bot, a
+human's badge follows the same owner/admin/mod/member ladder Red itself uses
+for permission checks. A fixed label does not make the emoji fixed too -- an
+admin editing their own message should still show the admin badge next to
+whatever label the action type chose for that field.
+
+Only when an action type configures *both* does nothing else run: that is the
+one case cheap enough to skip Red's admin/mod lookups entirely.
 
 This lives here, not in ``modlog_render``, because the ladder needs ``bot`` and is
 inherently ``async`` (``is_admin_or_superior``/``is_mod_or_superior`` hit Red's admin
@@ -27,18 +34,10 @@ MEMBER = ("Member", "👤")
 USER = ("User", "👤")
 
 
-async def resolve_actor_display(
-    bot,
-    actor: discord.Member | discord.User | int | None,
-    *,
-    configured_label: str | None,
-    configured_emoji: str | None,
+async def _dynamic_tier(
+    bot, actor: discord.Member | discord.User | int | None
 ) -> tuple[str, str]:
-    """The (label, emoji) pair an actor's case field should use.
-
-    A configured label short-circuits everything else -- no Red API calls happen
-    at all in that case, so a cog that always wants "Requester"/🙋 never pays for
-    a permission lookup it doesn't need.
+    """The (label, emoji) pair for the actor's real standing in the guild.
 
     Only a live guild member carries roles and permissions to check against; a
     ``discord.User`` (someone who has since left the guild) or a bare ID that
@@ -46,9 +45,6 @@ async def resolve_actor_display(
     than ``isinstance(actor, discord.Member)`` so a test double only needs to
     look like a member, not subclass a real discord.py type.
     """
-    if configured_label is not None:
-        return configured_label, configured_emoji
-
     if getattr(actor, "bot", False):
         return BOT
 
@@ -65,3 +61,31 @@ async def resolve_actor_display(
         return MODERATOR
 
     return MEMBER
+
+
+async def resolve_actor_display(
+    bot,
+    actor: discord.Member | discord.User | int | None,
+    *,
+    configured_label: str | None,
+    configured_emoji: str | None,
+) -> tuple[str, str]:
+    """The (label, emoji) pair an actor's case field should use.
+
+    A configured label and a configured emoji are independent overrides.
+    Supplying both short-circuits everything else -- no Red API calls happen
+    at all in that case, so a cog that always wants "Requester"/🙋 never pays
+    for a permission lookup it doesn't need. Supplying only one still runs the
+    dynamic tier lookup to fill in the other, since a fixed label (e.g. an
+    action type that always calls its actor "Member") says nothing about
+    which badge that actor's real tier should show.
+    """
+    if configured_label is not None and configured_emoji is not None:
+        return configured_label, configured_emoji
+
+    tier_label, tier_emoji = await _dynamic_tier(bot, actor)
+
+    return (
+        configured_label if configured_label is not None else tier_label,
+        configured_emoji if configured_emoji is not None else tier_emoji,
+    )

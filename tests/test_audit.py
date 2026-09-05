@@ -188,6 +188,11 @@ class TestMessageAuditing(AuditTestCase):
         self.author = FakeMember(222, "someone", self.guild)
         self.author.bot = False
 
+    @staticmethod
+    def _fields(channel) -> dict:
+        embed = channel.sent[-1]["embed"]
+        return {field.name: field.value for field in embed.fields}
+
     def _edit(self, *, before, after, cached=True):
         return FakeRawEdit(
             guild_id=self.guild.id,
@@ -202,6 +207,35 @@ class TestMessageAuditing(AuditTestCase):
 
         self.assertEqual(len(self.message_channel.sent), 1)
         self.assertEqual(self.stored_cases, {})
+
+    async def test_edit_actor_field_shows_the_authors_tier_emoji(self):
+        """The action type pins the field to a fixed "Member" label, but the
+        emoji should still reflect the author's real tier, not go missing."""
+        await self.cog.on_raw_message_edit(self._edit(before="old", after="new"))
+
+        self.assertTrue(self._fields(self.message_channel)["Member:"].endswith("👤"))
+
+    async def test_edit_by_an_admin_author_shows_the_admin_emoji(self):
+        """The "Member" label stays fixed regardless of who the author is --
+        it names the field, not the author's tier -- but the emoji must still
+        track that the author happens to be an admin."""
+        self.bot.admin_ids.add(self.author.id)
+
+        await self.cog.on_raw_message_edit(self._edit(before="old", after="new"))
+
+        self.assertTrue(self._fields(self.message_channel)["Member:"].endswith("⚔️"))
+
+    async def test_delete_actor_field_shows_the_authors_tier_emoji(self):
+        payload = FakeRawDelete(
+            guild_id=self.guild.id,
+            channel_id=77,
+            message_id=555,
+            cached_message=FakeCachedMessage(author=self.author, content="bye"),
+        )
+
+        await self.cog.on_raw_message_delete(payload)
+
+        self.assertTrue(self._fields(self.message_channel)["Member:"].endswith("👤"))
 
     async def test_unchanged_content_is_a_noop(self):
         await self.cog.on_raw_message_edit(self._edit(before="same", after="same"))
@@ -293,7 +327,7 @@ class TestChannelAuditing(AuditTestCase):
         await self.cog.on_guild_channel_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Admin:", self._fields(self.structure_channel))
+        self.assertTrue(self._fields(self.structure_channel)["Admin:"].endswith("⚔️"))
         self.assertEqual(self.stored_cases, {})
 
     async def test_update_with_unresolvable_actor_still_logs(self):
@@ -356,7 +390,7 @@ class TestRoleAuditing(AuditTestCase):
         await self.cog.on_guild_role_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Admin:", self._fields(self.structure_channel))
+        self.assertTrue(self._fields(self.structure_channel)["Admin:"].endswith("⚔️"))
         self.assertEqual(self.stored_cases, {})
 
     async def test_permission_diff_is_reported(self):
