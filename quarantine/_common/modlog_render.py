@@ -83,6 +83,8 @@ def build_case_embed(
 
     if case_number is not None:
         embed.add_field(name="Case:", value=f"`{case_number}`✅", inline=True)
+    else:
+        embed.add_field(name="Case:", value=f"`N/A`❎", inline=True)
 
     embed.add_field(name="Type:", value=f"`{action_name}`{action_emoji or ''}", inline=True)
 

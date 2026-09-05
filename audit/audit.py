@@ -234,8 +234,8 @@ class Audit(commands.Cog):
         jump_url = f"https://discord.com/channels/{guild.id}/{payload.channel_id}/{payload.message_id}"
 
         fields = [
-            field(f"Channel", f"{channel.mention}"),
-            field("Message ID", f"`{str(payload.message_id)}`"),
+            field(f"Channel", f"{channel.mention}", inline=True),
+            field("Message ID", f"`{str(payload.message_id)}`", inline=True),
             *content_fields,
             field("Jump to message", f"[Jump]({jump_url})"),
         ]
@@ -282,8 +282,8 @@ class Audit(commands.Cog):
             action_type="message_deleted",
             actor=cached.author,
             fields=[
-                field(f"Channel", f"{channel.mention}"),
-                field("Message ID", f"`{str(payload.message_id)}`"),
+                field(f"Channel", f"{channel.mention}", inline=True),
+                field("Message ID", f"`{str(payload.message_id)}`", inline=True),
                 field("Content", f"{content}"),
             ],
             channel=channel,
@@ -343,7 +343,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_created",
             actor=actor,
-            fields=[field("Channel", f"{channel.mention} (`{channel.id}`)")],
+            fields=[field("Channel", f"{channel.mention}", inline=True), field("Channel ID", f"`{channel.id}`", inline=True)],
             channel=log_channel,
         )
 
@@ -368,7 +368,8 @@ class Audit(commands.Cog):
             action_type="channel_updated",
             actor=actor,
             fields=[
-                field("Channel", f"{after.mention} (`{after.id}`)"),
+                field("Channel", f"{after.mention} (`{after.id}`)", inline=True),
+                field("Channel ID", f"`{after.id}`", inline=True),
                 field("Changes", "\n".join(diff)),
             ],
             channel=log_channel,
@@ -388,7 +389,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_deleted",
             actor=actor,
-            fields=[field("Channel", f"`#{channel.name}` (`{channel.id}`)")],
+            fields=[field("Channel", f"`#{channel.name}`", inline=True), field("Channel ID", f"`{channel.id}`", inline=True)],
             channel=log_channel,
         )
 
