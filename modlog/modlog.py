@@ -6,7 +6,7 @@ import logging
 import shutil
 from math import ceil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import discord
 from discord import Colour, Member, User, Guild
@@ -25,7 +25,7 @@ from ._common.log_channels import (
     set_category_channel,
     set_event_channel,
 )
-from ._common.modlog_render import build_case_embed
+from ._common.modlog_render import build_case_embed, field
 
 log = logging.getLogger("red.vivi-cogs.modlog")
 
@@ -78,7 +78,7 @@ class ModLog(commands.Cog):
         case_number: int
         actor: Member | User | int | None
         target: Member | User | int | None
-        reason: str | None
+        fields: List[Dict[str, Any]]
         channel_id: int | None
         message_id: int | None
         timestamp: float
@@ -94,7 +94,7 @@ class ModLog(commands.Cog):
             case_number: int,
             actor: Member | User | int | None,
             target: Member | User | int | None,
-            reason: str | None,
+            fields: List[Dict[str, Any]] | None,
             timestamp: float,
             duration: str | None,
             attachments: List[Path] | None = None,
@@ -107,7 +107,7 @@ class ModLog(commands.Cog):
             self.case_number = case_number
             self.actor = actor
             self.target = target
-            self.reason = reason
+            self.fields = fields or []
             self.timestamp = timestamp
             self.duration = duration
             self.attachments = attachments or []
@@ -144,7 +144,7 @@ class ModLog(commands.Cog):
             return {
                 "action_type": self.action_type.type,
                 "case_number": self.case_number,
-                "reason": self.reason,
+                "fields": self.fields,
                 "channel_id": self.channel_id,
                 "message_id": self.message_id,
                 "timestamp": self.timestamp,
@@ -189,12 +189,22 @@ class ModLog(commands.Cog):
             if data["action_type"] not in action_types:
                 raise UnknownActionType(data["action_type"])
 
+            if "fields" in data:
+                fields = data["fields"]
+            elif data.get("reason"):
+                # A case stored before dynamic fields existed has a plain
+                # reason string and no "fields" key -- synthesize the one
+                # field it would have been.
+                fields = [{"name": "Reason", "content": data["reason"], "inline": False}]
+            else:
+                fields = []
+
             return cls(
                 action_type=action_types[data["action_type"]],
                 case_number=data["case_number"],
                 actor=actor,
                 target=target,
-                reason=data["reason"],
+                fields=fields,
                 timestamp=data.get("timestamp", 0.0),
                 duration=data.get("duration"),
                 attachments=[Path(s) for s in data.get("attachments", [])],
@@ -446,7 +456,7 @@ class ModLog(commands.Cog):
             target_label=case.action_type.target_label,
             target=case.target,
             target_emoji=case.action_type.target_emoji,
-            reason=case.reason,
+            fields=case.fields,
             timestamp=case.timestamp,
             duration=case.duration,
             detailed=detailed,
@@ -501,7 +511,7 @@ class ModLog(commands.Cog):
         action_type: str,
         actor: Member | User | int | None = None,
         target: Member | User | int | None = None,
-        reason: str | None = None,
+        fields: List[Dict[str, Any]] | None = None,
         duration: str | None = None,
         attachments: List[Path] | None = None,
     ) -> ModLog.Case:
@@ -528,8 +538,12 @@ class ModLog(commands.Cog):
 
         case_number = await self._next_case_number(guild)
 
-        if not reason and registered.requires_reason:
-            reason = f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case."
+        has_reason = any(entry["name"].lower() == "reason" for entry in (fields or []))
+        if not has_reason and registered.requires_reason:
+            fields = list(fields or []) + [field(
+                "Reason",
+                f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case.",
+            )]
 
         if resolved_actor is None:
             actor_label, actor_emoji = "Actor", "🛡️"
@@ -546,7 +560,7 @@ class ModLog(commands.Cog):
             case_number=case_number,
             actor=resolved_actor,
             target=resolved_target,
-            reason=reason,
+            fields=fields,
             timestamp=datetime.datetime.now(datetime.timezone.utc).timestamp(),
             duration=duration,
             attachments=attachments,
@@ -660,7 +674,24 @@ class ModLog(commands.Cog):
             await ctx.send(f"Case `{case_number}` could not be found.", ephemeral=True)
             return
 
-        await cases.set_raw(str(case_number), "reason", value=reason)
+        # Find the stored "Reason" field by name, not position -- other
+        # fields may exist before or after it, in whatever order the caller
+        # that created the case chose.
+        stored_fields = case_dict.get("fields", [])
+        new_fields = []
+        found = False
+
+        for entry in stored_fields:
+            if entry["name"].lower() == "reason":
+                new_fields.append({**entry, "content": reason})
+                found = True
+            else:
+                new_fields.append(entry)
+
+        if not found:
+            new_fields.append({"name": "Reason", "content": reason, "inline": False})
+
+        await cases.set_raw(str(case_number), "fields", value=new_fields)
 
         await ctx.send(f"Case `{case_number}` has been updated.")
 
@@ -689,7 +720,18 @@ class ModLog(commands.Cog):
 
         embed = message.embeds[0]
 
-        embed.set_field_at(len(embed.fields) - 1, name="Reason:", value=reason, inline=False)
+        # Stored field names are bare ("Reason"); a rendered embed's field
+        # names carry the builder's trailing colon ("Reason:") -- match on
+        # the rendered form here, not the stored one.
+        target_index = next(
+            (index for index, posted in enumerate(embed.fields) if posted.name == "Reason:"),
+            None,
+        )
+
+        if target_index is not None:
+            embed.set_field_at(target_index, name="Reason:", value=reason, inline=False)
+        else:
+            embed.add_field(name="Reason:", value=reason, inline=False)
 
         try:
             await message.edit(embed=embed)

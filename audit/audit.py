@@ -16,6 +16,7 @@ from ._common.log_channels import (
     set_event_channel,
 )
 from ._common.modlog_proxy import ModLogProxy
+from ._common.modlog_render import field
 
 log = logging.getLogger("red.vivi-cogs.audit")
 
@@ -215,10 +216,10 @@ class Audit(commands.Cog):
             after_content = payload.data.get("content", "")
             if cached.content == after_content:
                 return
-            reason = (
-                f"**Before:** {_truncate(cached.content)}\n"
-                f"**After:** {_truncate(after_content)}"
-            )
+            content_fields = [
+                field("Before", _truncate(cached.content)),
+                field("After", _truncate(after_content)),
+            ]
             actor = cached.author
         else:
             if author_data.get("bot"):
@@ -228,16 +229,20 @@ class Audit(commands.Cog):
                 log.debug("Edited message %s had no cached content or author; skipping.", payload.message_id)
                 return
             actor = guild.get_member(int(author_id)) or int(author_id)
-            reason = "Message content unavailable (not cached)."
+            content_fields = [field("Note", "Message content unavailable (not cached).")]
 
         jump_url = f"https://discord.com/channels/{guild.id}/{payload.channel_id}/{payload.message_id}"
-        reason += f"\n[Jump to message]({jump_url})"
+        fields = [
+            field("Message ID", str(payload.message_id)),
+            *content_fields,
+            field("Jump to message", f"[Jump]({jump_url})"),
+        ]
 
         await self.modlog.log_event(
             guild,
             action_type="message_edited",
             actor=actor,
-            reason=reason,
+            fields=fields,
             channel=channel,
         )
 
@@ -268,11 +273,16 @@ class Audit(commands.Cog):
         location = source_channel.mention if source_channel else f"<#{payload.channel_id}>"
         content = _truncate(cached.content) if cached.content else "*No text content.*"
 
+        # No "Jump to message" here, unlike edits -- a deleted message's link
+        # no longer resolves to anything.
         await self.modlog.log_event(
             guild,
             action_type="message_deleted",
             actor=cached.author,
-            reason=f"Deleted in {location}.\n**Content:** {content}",
+            fields=[
+                field("Message ID", str(payload.message_id)),
+                field("Content", f"Deleted in {location}.\n{content}"),
+            ],
             channel=channel,
         )
 
@@ -330,7 +340,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_created",
             actor=actor,
-            reason=f"Channel {channel.mention} (`{channel.id}`) created.",
+            fields=[field("Channel", f"{channel.mention} (`{channel.id}`)")],
             channel=log_channel,
         )
 
@@ -350,13 +360,14 @@ class Audit(commands.Cog):
             after.guild, action=discord.AuditLogAction.channel_update, target_id=after.id
         )
 
-        reason = f"Channel {after.mention} (`{after.id}`) updated.\n" + "\n".join(diff)
-
         await self.modlog.log_event(
             after.guild,
             action_type="channel_updated",
             actor=actor,
-            reason=reason,
+            fields=[
+                field("Channel", f"{after.mention} (`{after.id}`)"),
+                field("Changes", "\n".join(diff)),
+            ],
             channel=log_channel,
         )
 
@@ -374,7 +385,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_deleted",
             actor=actor,
-            reason=f"Channel `#{channel.name}` (`{channel.id}`) deleted.",
+            fields=[field("Channel", f"`#{channel.name}` (`{channel.id}`)")],
             channel=log_channel,
         )
 
@@ -424,7 +435,7 @@ class Audit(commands.Cog):
             role.guild,
             action_type="role_created",
             actor=actor,
-            reason=f"Role {role.mention} (`{role.id}`) created.",
+            fields=[field("Role", f"{role.mention} (`{role.id}`)")],
             channel=log_channel,
         )
 
@@ -442,13 +453,14 @@ class Audit(commands.Cog):
             after.guild, action=discord.AuditLogAction.role_update, target_id=after.id
         )
 
-        reason = f"Role {after.mention} (`{after.id}`) updated.\n" + "\n".join(diff)
-
         await self.modlog.log_event(
             after.guild,
             action_type="role_updated",
             actor=actor,
-            reason=reason,
+            fields=[
+                field("Role", f"{after.mention} (`{after.id}`)"),
+                field("Changes", "\n".join(diff)),
+            ],
             channel=log_channel,
         )
 
@@ -466,7 +478,7 @@ class Audit(commands.Cog):
             role.guild,
             action_type="role_deleted",
             actor=actor,
-            reason=f"Role `@{role.name}` (`{role.id}`) deleted.",
+            fields=[field("Role", f"`@{role.name}` (`{role.id}`)")],
             channel=log_channel,
         )
 
@@ -495,18 +507,18 @@ class Audit(commands.Cog):
             after.guild, action=discord.AuditLogAction.member_role_update, target_id=after.id
         )
 
-        parts = []
+        fields = []
         if added:
-            parts.append(f"Added: {humanize_list([role.mention for role in added])}")
+            fields.append(field("Roles Added", humanize_list([role.mention for role in added])))
         if removed:
-            parts.append(f"Removed: {humanize_list([role.mention for role in removed])}")
+            fields.append(field("Roles Removed", humanize_list([role.mention for role in removed])))
 
         await self.modlog.log_event(
             after.guild,
             action_type="member_roles_changed",
             target=after,
             actor=actor,
-            reason="\n".join(parts),
+            fields=fields,
             channel=log_channel,
         )
 

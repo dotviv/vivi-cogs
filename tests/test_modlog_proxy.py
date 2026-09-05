@@ -10,6 +10,7 @@ import discord
 import common.modlog_proxy as proxy_module
 import modlog.modlog as modlog_module
 from common.modlog_proxy import CaseRef, ModLogProxy
+from common.modlog_render import reason_field
 from modlog.modlog import ModLog
 
 from tests.helpers import (
@@ -166,7 +167,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="spamming"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("spamming")
         )
 
         self.assertIsInstance(ref, CaseRef)
@@ -181,7 +182,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", actor=111, reason="channel-wide warning"
+            self.guild, action_type="warn", actor=111, fields=reason_field("channel-wide warning")
         )
 
         self.assertIsInstance(ref, CaseRef)
@@ -194,7 +195,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertNotIsInstance(ref, ModLog.Case)
@@ -203,7 +204,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertEqual(self.core.created, ["warn"])
@@ -213,10 +214,39 @@ class TestCaseRouting(ProxyTestCase):
     async def test_display_resolves_from_declarations_without_modlog(self):
         """confirm_action and summaries still need a readable name."""
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertEqual(ref.action_name, "Warning")
+
+    async def test_core_fallback_flattens_fields_into_one_reason_string(self):
+        """Core's create_case only accepts a single reason string -- multiple
+        fields must be reformatted into it, in order, none dropped."""
+        await self.proxy.create_case(
+            self.guild,
+            action_type="warn",
+            target=222,
+            actor=111,
+            fields=[
+                {"name": "Note", "content": "x", "inline": False},
+                {"name": "Location", "content": "y", "inline": False},
+            ],
+        )
+
+        stored_reason = self.core.cases[0].reason
+        self.assertEqual(stored_reason, "**Note:** x\n**Location:** y")
+
+    async def test_core_fallback_field_flattening_logs_nothing_extra(self):
+        """Unlike attachments/duration, nothing is lost when flattening fields
+        into text -- only reformatted -- so no log line should fire for it."""
+        with self.assertNoLogs("red.vivi-cogs.common.modlog_proxy"):
+            await self.proxy.create_case(
+                self.guild,
+                action_type="warn",
+                target=222,
+                actor=111,
+                fields=[{"name": "Note", "content": "x", "inline": False}],
+            )
 
 
 class TestFallbackPolicy(ProxyTestCase):
@@ -235,7 +265,7 @@ class TestFallbackPolicy(ProxyTestCase):
         """Core's [p]case and [p]casesfor carry no permission check, so a core
         case would let any member deanonymise a topic-change requester."""
         result = await self.private.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertIsNone(result)
@@ -246,7 +276,7 @@ class TestFallbackPolicy(ProxyTestCase):
         await self.private.refresh()
 
         ref = await self.private.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertIsNotNone(ref)
@@ -260,7 +290,7 @@ class TestCoreFailureModes(ProxyTestCase):
         """Core's create_case takes the target as a required positional
         argument, so a targetless action never even reaches it."""
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", actor=111, reason="x"
+            self.guild, action_type="warn", actor=111, fields=reason_field("x")
         )
 
         self.assertIsNone(result)
@@ -270,7 +300,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = None
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertIsNone(result)
@@ -279,7 +309,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = "value_error"
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertIsNone(result)
@@ -288,7 +318,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = "runtime_error"
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         self.assertIsNone(result)
@@ -299,7 +329,7 @@ class TestEvents(ProxyTestCase):
         self.core.channel = RecordingChannel()
 
         posted = await self.proxy.log_event(
-            self.guild, action_type="warn", target=222, reason="failed a captcha"
+            self.guild, action_type="warn", target=222, fields=reason_field("failed a captcha")
         )
 
         self.assertTrue(posted)
@@ -308,13 +338,13 @@ class TestEvents(ProxyTestCase):
         names = [f.name for f in self.core.channel.sent[0]["embed"].fields]
         self.assertNotIn("Case:", names)
         self.assertEqual(names[0], "Type:")
-        self.assertEqual(names[-1], "Reason:")
+        self.assertIn("Reason:", names)
 
     async def test_reports_failure_without_a_channel(self):
         self.core.channel = None
 
         posted = await self.proxy.log_event(
-            self.guild, action_type="warn", target=222, reason="x"
+            self.guild, action_type="warn", target=222, fields=reason_field("x")
         )
 
         self.assertFalse(posted)
@@ -326,7 +356,7 @@ class TestEvents(ProxyTestCase):
         override = RecordingChannel()
 
         posted = await self.proxy.log_event(
-            self.guild, action_type="warn", target=222, reason="x", channel=override
+            self.guild, action_type="warn", target=222, fields=reason_field("x"), channel=override
         )
 
         self.assertTrue(posted)
@@ -336,7 +366,7 @@ class TestEvents(ProxyTestCase):
         self.core.channel = RecordingChannel()
 
         posted = await self.proxy.log_event(
-            self.guild, action_type="warn", target=222, reason="x"
+            self.guild, action_type="warn", target=222, fields=reason_field("x")
         )
 
         self.assertTrue(posted)
@@ -351,7 +381,7 @@ class TestRecentCases(ProxyTestCase):
         self.load_modlog()
         await self.proxy.refresh()
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
@@ -363,7 +393,7 @@ class TestRecentCases(ProxyTestCase):
         self.load_modlog()
         await self.proxy.refresh()
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.FAR_FUTURE)
@@ -372,7 +402,7 @@ class TestRecentCases(ProxyTestCase):
 
     async def test_reads_from_core_when_modlog_absent(self):
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
@@ -385,7 +415,7 @@ class TestRecentCases(ProxyTestCase):
         through core's ungated lookups. Reading a case that already exists
         there adds no visibility core did not already have."""
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, actor=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, fields=reason_field("x")
         )
         private = ModLogProxy(self.cog, action_types=ACTION_TYPES, core_fallback=False)
 
@@ -411,7 +441,7 @@ class TestSummaries(ProxyTestCase):
         self.assertIn("Channel created.", ctx.sent[0])
 
     async def test_note_goes_in_the_description_not_a_field(self):
-        """Reason has to stay the last field."""
+        """The note is an aside about this delivery, not part of the case."""
         ctx = RecordingContext()
         ref = CaseRef(
             action_type="warn",
@@ -419,7 +449,7 @@ class TestSummaries(ProxyTestCase):
             action_color=discord.Colour.yellow(),
             action_emoji="⚠️",
             target=222,
-            reason="spamming",
+            fields=reason_field("spamming"),
             timestamp=0.0,
             case_number=5,
         )
@@ -428,7 +458,7 @@ class TestSummaries(ProxyTestCase):
 
         embed = ctx.sent[0]["embed"]
         self.assertEqual(embed.description, "Extra context.")
-        self.assertEqual([f.name for f in embed.fields][-1], "Reason:")
+        self.assertIn("Reason:", [f.name for f in embed.fields])
 
 
 if __name__ == "__main__":

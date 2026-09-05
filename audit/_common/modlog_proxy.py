@@ -54,7 +54,7 @@ from redbot.core.commands import Context
 
 from .actor_tiers import resolve_actor_display
 from .interactions import ConfirmationView
-from .modlog_render import build_case_embed
+from .modlog_render import build_case_embed, reason_field
 
 log = logging.getLogger("red.vivi-cogs.common.modlog_proxy")
 
@@ -79,7 +79,7 @@ class CaseRef:
     action_color: Colour
     action_emoji: str | None
     target: Member | User | int | None
-    reason: str
+    fields: List[Dict[str, Any]]
     timestamp: float
     case_number: int | None = None
     actor: Member | User | int | None = None
@@ -255,7 +255,7 @@ class ModLogProxy:
         action_type: str,
         target: Member | User | int | None = None,
         actor: Member | User | int | None = None,
-        reason: str | None = None,
+        fields: List[Dict[str, Any]] | None = None,
         duration: str | None = None,
         attachments: List[Path] | None = None,
     ) -> CaseRef | None:
@@ -280,7 +280,7 @@ class ModLogProxy:
                 action_type=action_type,
                 target=target,
                 actor=actor,
-                reason=reason,
+                fields=fields,
                 duration=duration,
                 attachments=attachments,
             )
@@ -298,10 +298,21 @@ class ModLogProxy:
             action_type=action_type,
             target=target,
             actor=actor,
-            reason=reason,
+            fields=fields,
             duration=duration,
             attachments=attachments,
         )
+
+    @staticmethod
+    def _flatten_fields(fields: List[Dict[str, Any]] | None) -> str:
+        """Collapse structured fields into the single ``reason`` string core's
+        own ``create_case`` accepts.
+
+        Nothing is lost here the way attachments/duration are for this
+        fallback -- every field survives, just reformatted as prose -- so this
+        gets no warning/debug line the way those do.
+        """
+        return "\n".join(f"**{entry['name']}:** {entry['content']}" for entry in (fields or []))
 
     async def _create_core_case(
         self,
@@ -310,7 +321,7 @@ class ModLogProxy:
         action_type: str,
         target: Member | User | int | None,
         actor: Member | User | int | None,
-        reason: str | None,
+        fields: List[Dict[str, Any]] | None,
         duration: str | None,
         attachments: List[Path] | None,
     ) -> CaseRef | None:
@@ -348,7 +359,7 @@ class ModLogProxy:
                 action_type,
                 target,
                 moderator=actor,
-                reason=reason,
+                reason=self._flatten_fields(fields),
             )
         except ValueError:
             log.warning(
@@ -370,7 +381,7 @@ class ModLogProxy:
             action_type=action_type,
             actor=actor,
             target=target,
-            reason=reason,
+            fields=fields,
             duration=duration,
         )
 
@@ -390,7 +401,7 @@ class ModLogProxy:
             case_number=case.case_number,
             actor=case.actor,
             target=case.target,
-            reason=case.reason,
+            fields=case.fields,
             timestamp=case.timestamp,
             duration=case.duration,
             target_label=case.action_type.target_label,
@@ -407,7 +418,7 @@ class ModLogProxy:
         action_type: str,
         actor: Member | User | int | None,
         target: Member | User | int,
-        reason: str | None,
+        fields: List[Dict[str, Any]] | None,
         duration: str | None,
     ) -> CaseRef:
         """Build a ``CaseRef`` from a core-modlog ``Case`` instance.
@@ -454,7 +465,7 @@ class ModLogProxy:
             case_number=getattr(case, "case_number", None),
             actor=actor,
             target=target,
-            reason=reason or "",
+            fields=fields or [],
             timestamp=timestamp,
             duration=duration,
             target_label=display["target_label"],
@@ -501,7 +512,12 @@ class ModLogProxy:
                     action_type=case.action_type,
                     actor=getattr(case, "moderator", None),
                     target=case.user,
-                    reason=getattr(case, "reason", None),
+                    # Core only ever held one flattened reason string (see
+                    # _flatten_fields), so a past core-fallback case can only be
+                    # read back as a single "Reason" field, even if it was
+                    # originally written from several -- an accepted lossy
+                    # round-trip specific to this fallback path.
+                    fields=reason_field(getattr(case, "reason", None)),
                     duration=None,
                 )
             )
@@ -518,7 +534,7 @@ class ModLogProxy:
         *,
         action_type: str,
         target: Member | User | int | None = None,
-        reason: str,
+        fields: List[Dict[str, Any]],
         actor: Member | User | int | None = None,
         timestamp: float | None = None,
         channel: discord.abc.Messageable | None = None,
@@ -561,7 +577,7 @@ class ModLogProxy:
             actor_label=actor_label,
             actor=actor,
             actor_emoji=actor_emoji,
-            reason=reason,
+            fields=fields,
             timestamp=timestamp or datetime.datetime.now(datetime.timezone.utc).timestamp(),
         )
 
@@ -590,7 +606,7 @@ class ModLogProxy:
         *,
         action_type: str,
         target: Member | User,
-        reason: str | None = None,
+        fields: List[Dict[str, Any]] | None = None,
         duration: str | None = None,
         title: str = "Confirm action",
         timeout: int = 30,
@@ -616,8 +632,10 @@ class ModLogProxy:
         if duration:
             embed.add_field(name="Duration:", value=f"`{duration}`", inline=False)
 
-        if reason:
-            embed.add_field(name="Reason:", value=f"{reason}", inline=False)
+        for entry in fields or []:
+            embed.add_field(
+                name=f"{entry['name']}:", value=entry["content"], inline=entry.get("inline", False)
+            )
 
         message = await ctx.send(view=view, embed=embed, ephemeral=ephemeral)
 
@@ -676,13 +694,15 @@ class ModLogProxy:
             actor_emoji=case.actor_emoji,
             target=case.target,
             target_emoji=case.target_emoji,
-            reason=case.reason,
+            fields=case.fields,
             timestamp=case.timestamp,
             duration=case.duration,
         )
 
-        # The note goes in the description rather than a field, so that "Reason"
-        # stays the last field.
+        # The note is a one-off aside about this particular delivery (e.g.
+        # "transcript not attached"), not part of the case record itself, so it
+        # stays in the description rather than becoming a field alongside the
+        # case's own.
 
         if note:
             embed.description = note

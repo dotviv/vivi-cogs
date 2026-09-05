@@ -16,6 +16,7 @@ from redbot.core.utils.predicates import MessagePredicate
 
 from . import prompts
 from ._common.modlog_proxy import ModLogProxy
+from ._common.modlog_render import field
 
 log = logging.getLogger("red.vivi-cogs.topics")
 
@@ -138,21 +139,20 @@ class Topics(commands.Cog):
         something that happened to them, so it belongs in their
         ``[p]actions`` history rather than ``[p]cases``.
 
-        Where and what they said go in the reason, since that is the field that
-        takes free text and stays last in the embed.
+        Where and what they said each get their own named field now, rather
+        than one concatenated blob.
         """
-        detail = note or "*No message attached.*"
-        reason = (
-            f"{detail}\n\n"
-            f"Requested in {channel.mention} — [jump to conversation]({jump_url})\n"
-            f"Anonymous in the channel, attributed here."
-        )
+        fields = [
+            field("Note", note or "*No message attached.*"),
+            field("Requested in", channel.mention),
+            field("Jump to conversation", f"[Jump]({jump_url})"),
+        ]
 
         case = await self.modlog.create_case(
             member.guild,
             action_type="topic_change",
             actor=member,
-            reason=reason,
+            fields=fields,
         )
 
         return case is not None

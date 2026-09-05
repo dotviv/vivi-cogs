@@ -14,6 +14,7 @@ from redbot.core.data_manager import cog_data_path
 
 from ._common.interactions import Interactions
 from ._common.modlog_proxy import ModLogProxy
+from ._common.modlog_render import reason_field
 from ._common.roles import Roles
 
 log = logging.getLogger("red.vivi-cogs.quarantine")
@@ -360,7 +361,7 @@ class Quarantine(commands.Cog):
             action_type="unquarantine",
             actor=actor,
             target=target_member or target,
-            reason=reason,
+            fields=reason_field(reason),
             attachments=attachments
         )
 
@@ -455,7 +456,7 @@ class Quarantine(commands.Cog):
         confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             action_type="quarantine",
-            reason=reason,
+            fields=reason_field(reason),
             target=member
         )
 
@@ -511,7 +512,7 @@ class Quarantine(commands.Cog):
             action_type="quarantine",
             actor=ctx.author,
             target=member,
-            reason=reason)
+            fields=reason_field(reason))
 
         await self.modlog.send_case_action_summary(
             ctx,
@@ -545,7 +546,7 @@ class Quarantine(commands.Cog):
         confirmation = await self.modlog.confirm_action(
             ctx=ctx,
             action_type="unquarantine",
-            reason=reason,
+            fields=reason_field(reason),
             target=member
         )
 

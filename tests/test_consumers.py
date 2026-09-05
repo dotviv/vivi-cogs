@@ -175,13 +175,13 @@ class TestTopics(ConsumerTestCase):
 
         self.assertIsNone(self.cases_of_type("topic_change")[0]["target_id"])
 
-    async def test_context_is_preserved_in_the_reason(self):
+    async def test_context_is_preserved_across_fields(self):
         await self._request()
-        reason = self.cases_of_type("topic_change")[0]["reason"]
+        fields = {f["name"]: f["content"] for f in self.cases_of_type("topic_change")[0]["fields"]}
 
-        self.assertIn("can we talk about something else", reason)
-        self.assertIn("<#77>", reason)
-        self.assertIn("https://discord.com/x/y/z", reason)
+        self.assertIn("can we talk about something else", fields["Note"])
+        self.assertIn("<#77>", fields["Requested in"])
+        self.assertIn("https://discord.com/x/y/z", fields["Jump to conversation"])
 
     async def test_request_lands_in_the_requesters_actions_not_their_cases(self):
         await self._request()

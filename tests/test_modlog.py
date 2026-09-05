@@ -7,7 +7,7 @@ import unittest
 import discord
 
 import modlog.modlog as modlog_module
-from common.modlog_render import build_case_embed
+from common.modlog_render import build_case_embed, reason_field
 from modlog.modlog import ModLog, UnknownActionType
 
 from tests.helpers import FakeBot, FakeGuild, FakeMember, RecordingChannel, make_modlog_cog
@@ -138,7 +138,7 @@ class TestCaseSerialisation(ModLogTestCase):
             case_number=1,
             actor=111,
             target=222,
-            reason="test",
+            fields=reason_field("test"),
             timestamp=0.0,
             duration=None,
         )
@@ -155,11 +155,11 @@ class TestCaseSerialisation(ModLogTestCase):
         self.assertIsNone(payload["message_id"])
 
     def test_round_trip_preserves_the_case(self):
-        payload = self._case(reason="spamming").to_dict()
+        payload = self._case(fields=reason_field("spamming")).to_dict()
         rebuilt = self.cog.case_from_dict(self.guild, payload)
 
         self.assertEqual(rebuilt.case_number, 1)
-        self.assertEqual(rebuilt.reason, "spamming")
+        self.assertEqual(rebuilt.fields, reason_field("spamming"))
         self.assertEqual(rebuilt.action_type.name, "Warning")
 
     def test_rebuilding_an_unregistered_type_raises(self):
@@ -231,14 +231,35 @@ class TestCaseSerialisation(ModLogTestCase):
         self.assertEqual(rebuilt.actor_label, "Actor")
         self.assertEqual(rebuilt.actor_emoji, "🛡️")
 
+    def test_old_stored_case_without_fields_synthesizes_a_reason_field(self):
+        """A case stored before dynamic fields existed has a plain "reason"
+        string and no "fields" key at all -- from_dict must not raise, and
+        must recover the reason as the one field it would have been."""
+        payload = self._case().to_dict()
+        del payload["fields"]
+        payload["reason"] = "spamming"
+
+        rebuilt = self.cog.case_from_dict(self.guild, payload)
+
+        self.assertEqual(rebuilt.fields, reason_field("spamming"))
+
+    def test_old_stored_case_with_no_reason_and_no_fields_gets_empty_fields(self):
+        payload = self._case().to_dict()
+        del payload["fields"]
+        payload["reason"] = None
+
+        rebuilt = self.cog.case_from_dict(self.guild, payload)
+
+        self.assertEqual(rebuilt.fields, [])
+
 
 class TestCreateCase(ModLogTestCase):
     async def test_numbers_cases_sequentially(self):
         first = await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="first"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("first")
         )
         second = await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="second"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("second")
         )
 
         self.assertEqual(first.case_number, 1)
@@ -247,20 +268,20 @@ class TestCreateCase(ModLogTestCase):
 
     async def test_indexes_cases_against_the_target(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="y"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("y")
         )
 
         self.assertEqual(self.cog.config.data["user_cases"]["222"], [1, 2])
 
     async def test_indexes_cases_against_the_actor(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=333, reason="y"
+            self.guild, action_type="warn", actor=111, target=333, fields=reason_field("y")
         )
 
         self.assertEqual(self.cog.config.data["actor_cases"]["111"], [1, 2])
@@ -273,7 +294,7 @@ class TestCreateCase(ModLogTestCase):
             action_type="warn",
             actor=111,
             target=None,
-            reason="channel-wide warning",
+            fields=reason_field("channel-wide warning"),
         )
 
         self.assertIn("1", self.cog.config.data["cases"])
@@ -282,7 +303,7 @@ class TestCreateCase(ModLogTestCase):
 
     async def test_case_with_no_actor_is_not_indexed_by_actor(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=None, target=222, reason="x"
+            self.guild, action_type="warn", actor=None, target=222, fields=reason_field("x")
         )
 
         self.assertNotIn("actor_cases", self.cog.config.data)
@@ -292,7 +313,7 @@ class TestCreateCase(ModLogTestCase):
         """The original opened the whole guild group twice per case, making each
         write O(total cases). Verification traffic turns that into a problem."""
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         self.assertTrue(self.cog.config.writes)
@@ -304,14 +325,14 @@ class TestCreateCase(ModLogTestCase):
     async def test_unregistered_action_type_raises(self):
         with self.assertRaises(UnknownActionType):
             await self.cog.create_case(
-                self.guild, action_type="nope", actor=111, target=222, reason="x"
+                self.guild, action_type="nope", actor=111, target=222, fields=reason_field("x")
             )
 
     async def test_case_is_stored_even_without_a_modlog_channel(self):
         self.channel = None
 
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         self.assertIn("1", self.cog.config.data["cases"])
@@ -321,7 +342,7 @@ class TestCreateCase(ModLogTestCase):
         self.channel = RecordingChannel()
 
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         stored = self.cog.config.data["cases"]["1"]
@@ -337,7 +358,7 @@ class TestCreateCase(ModLogTestCase):
         self.bot.admin_ids.add(111)
 
         case = await self.cog.create_case(
-            self.guild, action_type="warn", actor=actor, target=222, reason="x"
+            self.guild, action_type="warn", actor=actor, target=222, fields=reason_field("x")
         )
 
         self.assertEqual(case.actor_label, "Admin")
@@ -356,7 +377,7 @@ class TestCreateCase(ModLogTestCase):
         self.guild.owner_id = 999
 
         case = await self.cog.create_case(
-            self.guild, action_type="topic_change", actor=owner, reason="x"
+            self.guild, action_type="topic_change", actor=owner, fields=reason_field("x")
         )
 
         self.assertEqual(case.actor_label, "Requester")
@@ -367,7 +388,7 @@ class TestCreateCase(ModLogTestCase):
         to resolve -- the placeholder is never rendered anyway since
         build_case_embed omits the whole field when actor is None."""
         case = await self.cog.create_case(
-            self.guild, action_type="warn", actor=None, target=222, reason="x"
+            self.guild, action_type="warn", actor=None, target=222, fields=reason_field("x")
         )
 
         self.assertEqual(case.actor_label, "Actor")
@@ -381,7 +402,7 @@ class TestChannelRouting(ModLogTestCase):
         self.channel = RecordingChannel()
 
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         self.assertEqual(len(self.channel.sent), 1)
@@ -393,7 +414,7 @@ class TestChannelRouting(ModLogTestCase):
         self.cog.config.data["log_channels"] = {"categories": {"modlog": 501}, "events": {}}
 
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         self.assertEqual(len(category_channel.sent), 1)
@@ -410,7 +431,7 @@ class TestChannelRouting(ModLogTestCase):
         }
 
         await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("x")
         )
 
         self.assertEqual(len(event_channel.sent), 1)
@@ -478,12 +499,12 @@ class TestChannelCommands(ModLogTestCase):
 class TestCasesSince(ModLogTestCase):
     async def test_filters_by_timestamp(self):
         old = await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="old"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("old")
         )
         self.cog.config.data["cases"][str(old.case_number)]["timestamp"] = 1000.0
 
         new = await self.cog.create_case(
-            self.guild, action_type="warn", actor=111, target=222, reason="new"
+            self.guild, action_type="warn", actor=111, target=222, fields=reason_field("new")
         )
         self.cog.config.data["cases"][str(new.case_number)]["timestamp"] = 5000.0
 
@@ -499,7 +520,7 @@ class TestCasesSince(ModLogTestCase):
             case_number=1,
             actor=111,
             target=222,
-            reason="test",
+            fields=reason_field("test"),
             timestamp=0.0,
             duration=None,
         )
@@ -509,6 +530,100 @@ class TestCasesSince(ModLogTestCase):
         recent = await bare.cases_since(self.guild, 0.0)
 
         self.assertEqual(recent, [])
+
+
+class FakeReasonMessage:
+    """A posted case message, editable in place -- like RecordingChannel's
+    FakeMessage, but able to fetch back and re-render its embed."""
+
+    def __init__(self, embed):
+        self.embeds = [embed]
+        self.edited_embed = None
+
+    async def edit(self, *, embed):
+        self.edited_embed = embed
+        self.embeds = [embed]
+
+
+class FakeReasonChannel:
+    """Just enough of a channel for [p]reason to fetch its posted message."""
+
+    def __init__(self, message):
+        self.message = message
+
+    async def fetch_message(self, message_id):
+        return self.message
+
+
+class TestReasonCommand(ModLogTestCase):
+    """[p]reason edits the stored and posted "Reason" field by name."""
+
+    def _stored_case(self, *, fields, channel_id=None, message_id=None):
+        case = ModLog.Case(
+            action_type=self.cog.action_type("warn"),
+            case_number=1,
+            actor=111,
+            target=222,
+            fields=fields,
+            timestamp=0.0,
+            duration=None,
+            channel_id=channel_id,
+            message_id=message_id,
+        )
+        self.cog.config.data["cases"] = {"1": case.to_dict()}
+        return case
+
+    async def test_updates_a_non_last_reason_field_by_name(self):
+        self._stored_case(
+            fields=[
+                {"name": "Note", "content": "n", "inline": False},
+                {"name": "Reason", "content": "old", "inline": False},
+            ]
+        )
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog.reason.callback(self.cog, ctx, 1, reason="new text")
+
+        stored = self.cog.config.data["cases"]["1"]["fields"]
+        self.assertEqual(
+            stored,
+            [
+                {"name": "Note", "content": "n", "inline": False},
+                {"name": "Reason", "content": "new text", "inline": False},
+            ],
+        )
+
+    async def test_appends_a_reason_field_when_absent(self):
+        self._stored_case(fields=[{"name": "Note", "content": "n", "inline": False}])
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog.reason.callback(self.cog, ctx, 1, reason="new text")
+
+        stored = self.cog.config.data["cases"]["1"]["fields"]
+        self.assertEqual(stored[-1], {"name": "Reason", "content": "new text", "inline": False})
+
+    async def test_live_embed_patch_targets_the_field_by_name_not_position(self):
+        """Reason is deliberately NOT the last field here -- a position-based
+        patch would wrongly overwrite Note instead."""
+        case = self._stored_case(
+            fields=[
+                {"name": "Reason", "content": "old", "inline": False},
+                {"name": "Note", "content": "n", "inline": False},
+            ],
+            channel_id=444,
+            message_id=555,
+        )
+        embed = self.cog.case_embed(case)
+        message = FakeReasonMessage(embed)
+        self.guild.channels[444] = FakeReasonChannel(message)
+        ctx = FakeCommandContext(guild=self.guild)
+
+        await self.cog.reason.callback(self.cog, ctx, 1, reason="new text")
+
+        edited = message.edited_embed
+        by_name = {f.name: f.value for f in edited.fields}
+        self.assertEqual(by_name["Reason:"], "new text")
+        self.assertEqual(by_name["Note:"], "n")
 
 
 class TestEmbedBuilder(unittest.TestCase):
@@ -522,7 +637,7 @@ class TestEmbedBuilder(unittest.TestCase):
             target_label="Target",
             target=222,
             actor_label="Actor",
-            reason="because",
+            fields=reason_field("because"),
             timestamp=0.0,
         )
         defaults.update(overrides)
@@ -540,18 +655,29 @@ class TestEmbedBuilder(unittest.TestCase):
         self.assertNotIn("Case:", [field.name for field in embed.fields])
         self.assertEqual(embed.fields[0].name, "Type:")
 
-    def test_reason_is_always_the_final_field(self):
-        """[p]reason edits a posted case by index from the end."""
-        for kwargs in (
-            {},
-            {"case_number": 7},
-            {"detailed": True},
-            {"duration": "1h"},
-            {"target": None},
-        ):
-            with self.subTest(**kwargs):
-                embed = self._build(**kwargs)
-                self.assertEqual(embed.fields[-1].name, "Reason:")
+    def test_fields_render_in_the_order_given(self):
+        """Field order is caller-controlled -- nothing assumes reason (or any
+        other field) comes last."""
+        embed = self._build(
+            fields=[
+                {"name": "Note", "content": "n", "inline": False},
+                {"name": "Reason", "content": "r", "inline": False},
+                {"name": "Extra", "content": "e", "inline": True},
+            ]
+        )
+        names = [f.name for f in embed.fields]
+
+        self.assertEqual(names[-3:], ["Note:", "Reason:", "Extra:"])
+
+    def test_field_inline_is_honoured(self):
+        embed = self._build(fields=[{"name": "Extra", "content": "e", "inline": True}])
+
+        self.assertTrue(embed.fields[-1].inline)
+
+    def test_no_fields_produces_no_extra_field(self):
+        embed = self._build(fields=[])
+
+        self.assertNotIn("Reason:", [f.name for f in embed.fields])
 
     def test_omitting_the_target_omits_the_field(self):
         """A global or actor-only action has no single member it happened

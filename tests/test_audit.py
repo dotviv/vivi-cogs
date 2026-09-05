@@ -14,6 +14,7 @@ import discord
 
 from common.log_channels import set_category_channel, set_event_channel
 from common.modlog_proxy import ModLogProxy
+from common.modlog_render import reason_field
 
 from tests.helpers import FakeGroup, FakeMember, RecordingChannel
 from tests.test_consumers import ConsumerTestCase
@@ -354,7 +355,7 @@ class TestChannelAuditing(AuditTestCase):
         await self.cog.on_guild_channel_delete(channel)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("temp-channel", self._fields(self.structure_channel)["Reason:"])
+        self.assertIn("temp-channel", self._fields(self.structure_channel)["Channel:"])
 
 
 class TestRoleAuditing(AuditTestCase):
@@ -406,7 +407,7 @@ class TestRoleAuditing(AuditTestCase):
         await self.cog.on_guild_role_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("kick_members", self._fields(self.structure_channel)["Reason:"])
+        self.assertIn("kick_members", self._fields(self.structure_channel)["Changes:"])
 
     async def test_noop_update_produces_no_log_line(self):
         before = FakeRole(id=1, name="Helper", guild=self.guild)
@@ -422,7 +423,7 @@ class TestRoleAuditing(AuditTestCase):
         await self.cog.on_guild_role_delete(role)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Temp Role", self._fields(self.structure_channel)["Reason:"])
+        self.assertIn("Temp Role", self._fields(self.structure_channel)["Role:"])
 
 
 class TestMemberRoleAuditing(AuditTestCase):
@@ -432,7 +433,7 @@ class TestMemberRoleAuditing(AuditTestCase):
         self.add_channel(self.structure_channel)
         await set_category_channel(self.cog.config.guild(self.guild).log_channels, "memberlog", 222)
 
-    async def test_multi_role_diff_produces_one_batched_log_line(self):
+    async def test_multi_role_diff_produces_separate_added_removed_fields(self):
         role_a = FakeRole(id=10, name="RoleA", guild=self.guild)
         role_b = FakeRole(id=11, name="RoleB", guild=self.guild)
         role_c = FakeRole(id=12, name="RoleC", guild=self.guild)
@@ -449,11 +450,15 @@ class TestMemberRoleAuditing(AuditTestCase):
         await self.cog.on_member_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        embed = self.structure_channel.sent[0]["embed"]
-        reason = next(f.value for f in embed.fields if f.name == "Reason:")
-        self.assertIn("Added", reason)
-        self.assertIn("Removed", reason)
+        by_name = self._fields(self.structure_channel)
+        self.assertIn(role_b.mention, by_name["Roles Added:"])
+        self.assertIn(role_c.mention, by_name["Roles Removed:"])
         self.assertEqual(self.stored_cases, {})
+
+    @staticmethod
+    def _fields(channel) -> dict:
+        embed = channel.sent[-1]["embed"]
+        return {field.name: field.value for field in embed.fields}
 
     async def test_no_role_change_is_a_noop(self):
         same_roles = [FakeRole(id=10, name="RoleA", guild=self.guild)]
@@ -498,9 +503,9 @@ class TestOverview(AuditTestCase):
         other_proxy = ModLogProxy(other, action_types=OTHER_ACTION_TYPES)
         await other_proxy.refresh()
 
-        await other_proxy.create_case(self.guild, action_type="ban", target=1, actor=2, reason="x")
-        await other_proxy.create_case(self.guild, action_type="ban", target=3, actor=2, reason="y")
-        await other_proxy.create_case(self.guild, action_type="warn", target=4, actor=2, reason="z")
+        await other_proxy.create_case(self.guild, action_type="ban", target=1, actor=2, fields=reason_field("x"))
+        await other_proxy.create_case(self.guild, action_type="ban", target=3, actor=2, fields=reason_field("y"))
+        await other_proxy.create_case(self.guild, action_type="warn", target=4, actor=2, fields=reason_field("z"))
 
         embed = await self.cog._overview_embed(FakeOverviewContext(guild=self.guild), 24)
 
@@ -512,7 +517,7 @@ class TestOverview(AuditTestCase):
         """log_event never creates a case, so it must never show up here."""
         channel = FakeAuditChannel(999)
         await self.cog.modlog.log_event(
-            self.guild, action_type="message_edited", target=1, reason="x", channel=channel
+            self.guild, action_type="message_edited", target=1, fields=reason_field("x"), channel=channel
         )
 
         embed = await self.cog._overview_embed(FakeOverviewContext(guild=self.guild), 24)

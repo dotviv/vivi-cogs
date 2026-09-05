@@ -7,6 +7,7 @@ from redbot.core import commands
 from redbot.core.bot import Red
 
 from ._common.modlog_proxy import CaseRef, ModLogProxy
+from ._common.modlog_render import reason_field
 
 
 def audit_reason(case: CaseRef | None, reason: str | None) -> str:
@@ -71,7 +72,7 @@ class Moderation(commands.Cog):
             ctx=ctx,
             target=target,
             action_type="warn",
-            reason=reason
+            fields=reason_field(reason)
         )
 
         if not confirmation:
@@ -82,7 +83,7 @@ class Moderation(commands.Cog):
             action_type="warn",
             target=target,
             actor=ctx.author,
-            reason=reason)
+            fields=reason_field(reason))
 
         await self.modlog.send_case_action_summary(ctx, case, ephemeral=False) # Non-ephemeral, warnings need to surface so members can see their warnings.
 
@@ -101,7 +102,7 @@ class Moderation(commands.Cog):
             ctx=ctx,
             target=target,
             action_type="kick",
-            reason=reason
+            fields=reason_field(reason)
         )
 
         if not confirmation:
@@ -112,7 +113,7 @@ class Moderation(commands.Cog):
             action_type="kick",
             target=target,
             actor=ctx.author,
-            reason=reason)
+            fields=reason_field(reason))
 
         await guild.kick(target, reason=audit_reason(case, reason))
 
@@ -133,7 +134,7 @@ class Moderation(commands.Cog):
             ctx=ctx,
             target=target,
             action_type="ban",
-            reason=reason
+            fields=reason_field(reason)
         )
 
         if not confirmation:
@@ -144,7 +145,7 @@ class Moderation(commands.Cog):
             action_type="ban",
             target=target,
             actor=ctx.author,
-            reason=reason)
+            fields=reason_field(reason))
 
         await guild.ban(
             target,
@@ -168,7 +169,7 @@ class Moderation(commands.Cog):
             ctx=ctx,
             target=target,
             action_type="unban",
-            reason=reason
+            fields=reason_field(reason)
         )
 
         if not confirmation:
@@ -185,7 +186,7 @@ class Moderation(commands.Cog):
             action_type="unban",
             target=target,
             actor=ctx.author,
-            reason=reason)
+            fields=reason_field(reason))
 
         await guild.unban(target, reason=audit_reason(case, reason))
 

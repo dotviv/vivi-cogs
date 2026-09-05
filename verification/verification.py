@@ -14,6 +14,7 @@ from redbot.core.utils.chat_formatting import humanize_list
 
 from . import captcha
 from ._common.modlog_proxy import ModLogProxy
+from ._common.modlog_render import reason_field
 from .views import CaptchaPrompt, VerificationPanel
 
 log = logging.getLogger("red.vivi-cogs.verification")
@@ -170,7 +171,7 @@ class Verification(commands.Cog):
             action_type=action_type,
             target=member,
             actor=member.guild.me,
-            reason=reason,
+            fields=reason_field(reason),
         )
 
     # ------------------------------------------------------------------

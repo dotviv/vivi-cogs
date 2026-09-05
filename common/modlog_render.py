@@ -14,9 +14,29 @@ cross a cog boundary.
 from __future__ import annotations
 
 import datetime
+from typing import Any, Dict, List
 
 import discord
 from discord import Member, User
+
+
+def field(name: str, content: str, *, inline: bool = False) -> Dict[str, Any]:
+    """Build one dynamic embed field.
+
+    Plain dict, not a class -- this crosses ``bot.get_cog()`` boundaries (see
+    the module docstring), so it must stay a primitive rather than a vendored
+    type that would be foreign on the other side.
+    """
+    return {"name": name, "content": content, "inline": inline}
+
+
+def reason_field(reason: str | None) -> List[Dict[str, Any]]:
+    """The common case of a single "Reason" field, or none at all.
+
+    Keeps callers that only ever had a plain reason string a one-liner:
+    ``fields=reason_field(reason)``.
+    """
+    return [field("Reason", reason)] if reason else []
 
 
 def build_case_embed(
@@ -26,7 +46,7 @@ def build_case_embed(
     target_label: str,
     target: Member | User | int | None,
     target_emoji: str | None = None,
-    reason: str | None = None,
+    fields: List[Dict[str, Any]] | None = None,
     timestamp: float,
     action_emoji: str | None = None,
     actor_label: str,
@@ -47,8 +67,9 @@ def build_case_embed(
     ``detailed`` adds the raw IDs and always shows a duration; it is what
     ``[p]case`` uses. The compact form is what gets posted to the channel.
 
-    Reason is always the final field. ``[p]reason`` edits a posted case by
-    index from the end, so nothing may be appended after it.
+    ``fields`` are appended last, in the order given -- the caller decides
+    what belongs here and in what order, whether that's a single "Reason" (see
+    ``reason_field``) or several named pieces of context.
     """
     embed = discord.Embed(colour=action_color)
     embed.timestamp = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
@@ -86,7 +107,9 @@ def build_case_embed(
     elif duration:
         embed.add_field(name="Duration:", value=f"`{duration}`⏳", inline=False)
 
-    if reason:
-        embed.add_field(name="Reason:", value=reason, inline=False)
+    for entry in fields or []:
+        embed.add_field(
+            name=f"{entry['name']}:", value=entry["content"], inline=entry.get("inline", False)
+        )
 
     return embed
