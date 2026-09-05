@@ -33,7 +33,7 @@ class Verification(commands.Cog):
 
     # Every verification outcome is a real case, not a passing notice: the modlog
     # is a member's moderation and security history, and how someone got through
-    # the door is part of that. The bot is the moderator on all of them.
+    # the door is part of that. The bot is the actor on all of them.
     ACTION_TYPES = (
         {"type": "verification_pass", "name": "Verification Passed",
          "color": PASS_COLOUR, "emoji": "✅"},
@@ -162,14 +162,14 @@ class Verification(commands.Cog):
     async def _record(self, member: discord.Member, *, action_type: str, reason: str) -> None:
         """Record a verification outcome as a modlog case.
 
-        The bot is the moderator: nobody took this action by hand. The reason
+        The bot is the actor: nobody took this action by hand. The reason
         carries the detail, since the case already names the target.
         """
         await self.modlog.create_case(
             member.guild,
             action_type=action_type,
             target=member,
-            moderator=member.guild.me,
+            actor=member.guild.me,
             reason=reason,
         )
 

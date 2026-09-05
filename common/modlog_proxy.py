@@ -76,6 +76,10 @@ class CaseRef:
     case_number: int | None = None
     actor: Member | User | int | None = None
     duration: str | None = None
+    target_label: str = "Target"
+    target_emoji: str | None = "🎯"
+    actor_label: str = "Actor"
+    actor_emoji: str | None = "🛡️"
 
     #: Which backend recorded this: "modlog", "core", or "none" for an event
     #: that was rendered but never stored as a case.
@@ -196,6 +200,10 @@ class ModLogProxy:
                     "name": registered.name,
                     "color": registered.color,
                     "emoji": registered.emoji,
+                    "target_label": registered.target_label,
+                    "target_emoji": registered.target_emoji,
+                    "actor_label": registered.actor_label,
+                    "actor_emoji": registered.actor_emoji,
                 }
 
         declared = self._declared.get(action_type)
@@ -205,10 +213,22 @@ class ModLogProxy:
                 "name": declared["name"],
                 "color": declared["color"],
                 "emoji": declared.get("emoji"),
+                "target_label": declared.get("target_label", "Target"),
+                "target_emoji": declared.get("target_emoji", "🎯"),
+                "actor_label": declared.get("actor_label", "Actor"),
+                "actor_emoji": declared.get("actor_emoji", "🛡️"),
             }
 
         log.warning("No registered or declared action type for %s.", action_type)
-        return {"name": action_type, "color": discord.Colour.light_grey(), "emoji": None}
+        return {
+            "name": action_type,
+            "color": discord.Colour.light_grey(),
+            "emoji": None,
+            "target_label": "Target",
+            "target_emoji": "🎯",
+            "actor_label": "Actor",
+            "actor_emoji": "🛡️",
+        }
 
     ### ----------------------------------------------------------------
     ### Cases
@@ -313,7 +333,7 @@ class ModLogProxy:
                 datetime.datetime.now(datetime.timezone.utc),
                 action_type,
                 target,
-                actor=actor,
+                moderator=actor,
                 reason=reason,
             )
         except ValueError:
@@ -353,6 +373,10 @@ class ModLogProxy:
             reason=case.reason,
             timestamp=case.timestamp,
             duration=case.duration,
+            target_label=case.action_type.target_label,
+            target_emoji=case.action_type.target_emoji,
+            actor_label=case.action_type.actor_label,
+            actor_emoji=case.action_type.actor_emoji,
             source="modlog",
         )
 
@@ -394,6 +418,10 @@ class ModLogProxy:
             reason=reason or "",
             timestamp=timestamp,
             duration=duration,
+            target_label=display["target_label"],
+            target_emoji=display["target_emoji"],
+            actor_label=display["actor_label"],
+            actor_emoji=display["actor_emoji"],
             source="core",
         )
 
@@ -432,7 +460,7 @@ class ModLogProxy:
                 self._case_ref_from_core_case(
                     case,
                     action_type=case.action_type,
-                    actor=getattr(case, "actor", None),
+                    actor=getattr(case, "moderator", None),
                     target=case.user,
                     reason=getattr(case, "reason", None),
                     duration=None,
@@ -458,7 +486,7 @@ class ModLogProxy:
     ) -> bool:
         """Post a log entry that is deliberately not a case.
 
-        For things worth a actor's attention that do not belong in a
+        For things worth an actor's attention that do not belong in a
         member's permanent record. Renders identically to a case minus the case
         number, and needs no backend at all -- it posts straight to the guild's
         modlog channel, so it behaves the same whether ModLog is loaded or not.
@@ -478,8 +506,12 @@ class ModLogProxy:
             action_name=display["name"],
             action_color=display["color"],
             action_emoji=display["emoji"],
+            target_label=display["target_label"],
             target=target,
+            target_emoji=display["target_emoji"],
+            actor_label=display["actor_label"],
             actor=actor,
+            actor_emoji=display["actor_emoji"],
             reason=reason,
             timestamp=timestamp or datetime.datetime.now(datetime.timezone.utc).timestamp(),
         )
@@ -589,8 +621,12 @@ class ModLogProxy:
             action_color=case.action_color,
             action_emoji=case.action_emoji,
             case_number=case.case_number,
+            target_label=case.target_label,
+            actor_label=case.actor_label,
             actor=case.actor,
+            actor_emoji=case.actor_emoji,
             target=case.target,
+            target_emoji=case.target_emoji,
             reason=case.reason,
             timestamp=case.timestamp,
             duration=case.duration,

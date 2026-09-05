@@ -38,7 +38,7 @@ class Topics(commands.Cog):
     __version__ = "1.0.0"
 
     # A topic change request is something the requester did, not something
-    # that happened to them, so the case names them as its moderator with no
+    # that happened to them, so the case names them as its actor with no
     # target -- it shows up in their [p]actions, not [p]cases. Anonymity is a
     # property of the channel, not of the record.
     ACTION_TYPES = (
@@ -133,7 +133,7 @@ class Topics(commands.Cog):
 
         The request is anonymous in the channel it was made in and nowhere else:
         moderators need to know who asked in order to spot someone leaning on
-        the feature. The case names the requester as its moderator, with no
+        the feature. The case names the requester as its actor, with no
         target -- asking for a topic change is something they did, not
         something that happened to them, so it belongs in their
         ``[p]actions`` history rather than ``[p]cases``.
@@ -151,7 +151,7 @@ class Topics(commands.Cog):
         case = await self.modlog.create_case(
             member.guild,
             action_type="topic_change",
-            moderator=member,
+            actor=member,
             reason=reason,
         )
 

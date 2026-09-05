@@ -85,7 +85,7 @@ class FakeGuildConfig:
         self.case_sequence = FakeValue(data, "case_sequence", 1)
         self.cases = FakeGroup(data, "cases", writes)
         self.user_cases = FakeGroup(data, "user_cases", writes)
-        self.moderator_cases = FakeGroup(data, "moderator_cases", writes)
+        self.actor_cases = FakeGroup(data, "actor_cases", writes)
         self.log_channels = FakeGroup(data, "log_channels", writes)
 
 

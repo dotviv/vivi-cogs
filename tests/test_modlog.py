@@ -79,6 +79,39 @@ class TestActionTypeRegistry(ModLogTestCase):
     def test_registered_type_defaults_to_modlog_category(self):
         self.assertEqual(self.cog.action_type("warn").category, "modlog")
 
+    def test_unset_display_fields_default(self):
+        registered = self.cog.action_type("warn")
+
+        self.assertEqual(registered.target_label, "Target")
+        self.assertEqual(registered.target_emoji, "🎯")
+        self.assertEqual(registered.actor_label, "Actor")
+        self.assertEqual(registered.actor_emoji, "🛡️")
+        self.assertFalse(registered.requires_reason)
+
+    def test_custom_display_fields_round_trip(self):
+        """A registering cog's target/actor labels and emoji, and whether it
+        requires a reason, must actually reach the registry -- register_action_type
+        used to silently drop everything but type/name/color/emoji/category."""
+        self.cog.register_action_type(
+            type="topic_change",
+            name="Topic Change Request",
+            color=discord.Colour.blue(),
+            emoji="💬",
+            requires_reason=True,
+            target_label="Requester",
+            target_emoji="🙋",
+            actor_label="Requester",
+            actor_emoji="🙋",
+        )
+
+        registered = self.cog.action_type("topic_change")
+
+        self.assertTrue(registered.requires_reason)
+        self.assertEqual(registered.target_label, "Requester")
+        self.assertEqual(registered.target_emoji, "🙋")
+        self.assertEqual(registered.actor_label, "Requester")
+        self.assertEqual(registered.actor_emoji, "🙋")
+
     def test_explicit_category_round_trips(self):
         self.cog.register_action_type(
             type="raid_alert", name="Raid Alert", color=discord.Colour.red(), emoji="🚨", category="adminlog"
@@ -99,7 +132,7 @@ class TestCaseSerialisation(ModLogTestCase):
         defaults = dict(
             action_type=self.cog.action_type("warn"),
             case_number=1,
-            moderator=111,
+            actor=111,
             target=222,
             reason="test",
             timestamp=0.0,
@@ -132,21 +165,21 @@ class TestCaseSerialisation(ModLogTestCase):
         with self.assertRaises(UnknownActionType):
             bare.case_from_dict(self.guild, payload)
 
-    def test_moderator_may_be_none(self):
-        """Core modlog treats the moderator as optional, and the proxy allows
+    def test_actor_may_be_none(self):
+        """Core modlog treats the actor as optional, and the proxy allows
         None, so ModLog must not be the one component that crashes on it."""
-        payload = self._case(moderator=None).to_dict()
+        payload = self._case(actor=None).to_dict()
 
-        self.assertIsNone(payload["moderator_id"])
+        self.assertIsNone(payload["actor_id"])
 
         rebuilt = self.cog.case_from_dict(self.guild, payload)
-        self.assertIsNone(rebuilt.moderator)
+        self.assertIsNone(rebuilt.actor)
 
         embed = self.cog.case_embed(rebuilt)
-        self.assertNotIn("Moderator:", [field.name for field in embed.fields])
+        self.assertNotIn("Actor:", [field.name for field in embed.fields])
 
     def test_target_may_be_none(self):
-        """A moderator-only action -- e.g. warning a whole channel -- has no
+        """An actor-only action -- e.g. warning a whole channel -- has no
         single member it happened to."""
         payload = self._case(target=None).to_dict()
 
@@ -162,10 +195,10 @@ class TestCaseSerialisation(ModLogTestCase):
 class TestCreateCase(ModLogTestCase):
     async def test_numbers_cases_sequentially(self):
         first = await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="first"
+            self.guild, action_type="warn", actor=111, target=222, reason="first"
         )
         second = await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="second"
+            self.guild, action_type="warn", actor=111, target=222, reason="second"
         )
 
         self.assertEqual(first.case_number, 1)
@@ -174,52 +207,52 @@ class TestCreateCase(ModLogTestCase):
 
     async def test_indexes_cases_against_the_target(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="y"
+            self.guild, action_type="warn", actor=111, target=222, reason="y"
         )
 
         self.assertEqual(self.cog.config.data["user_cases"]["222"], [1, 2])
 
-    async def test_indexes_cases_against_the_moderator(self):
+    async def test_indexes_cases_against_the_actor(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=333, reason="y"
+            self.guild, action_type="warn", actor=111, target=333, reason="y"
         )
 
-        self.assertEqual(self.cog.config.data["moderator_cases"]["111"], [1, 2])
+        self.assertEqual(self.cog.config.data["actor_cases"]["111"], [1, 2])
 
     async def test_targetless_case_is_stored_but_not_indexed_by_target(self):
-        """A moderator-only action -- e.g. warning a whole channel -- still
+        """An actor-only action -- e.g. warning a whole channel -- still
         gets a case, just not filed under anyone's target-history."""
         await self.cog.create_case(
             self.guild,
             action_type="warn",
-            moderator=111,
+            actor=111,
             target=None,
             reason="channel-wide warning",
         )
 
         self.assertIn("1", self.cog.config.data["cases"])
         self.assertNotIn("user_cases", self.cog.config.data)
-        self.assertEqual(self.cog.config.data["moderator_cases"]["111"], [1])
+        self.assertEqual(self.cog.config.data["actor_cases"]["111"], [1])
 
-    async def test_case_with_no_moderator_is_not_indexed_by_moderator(self):
+    async def test_case_with_no_actor_is_not_indexed_by_actor(self):
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=None, target=222, reason="x"
+            self.guild, action_type="warn", actor=None, target=222, reason="x"
         )
 
-        self.assertNotIn("moderator_cases", self.cog.config.data)
+        self.assertNotIn("actor_cases", self.cog.config.data)
         self.assertEqual(self.cog.config.data["user_cases"]["222"], [1])
 
     async def test_every_write_is_scoped_to_a_key(self):
         """The original opened the whole guild group twice per case, making each
         write O(total cases). Verification traffic turns that into a problem."""
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         self.assertTrue(self.cog.config.writes)
@@ -231,14 +264,14 @@ class TestCreateCase(ModLogTestCase):
     async def test_unregistered_action_type_raises(self):
         with self.assertRaises(UnknownActionType):
             await self.cog.create_case(
-                self.guild, action_type="nope", moderator=111, target=222, reason="x"
+                self.guild, action_type="nope", actor=111, target=222, reason="x"
             )
 
     async def test_case_is_stored_even_without_a_modlog_channel(self):
         self.channel = None
 
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         self.assertIn("1", self.cog.config.data["cases"])
@@ -248,7 +281,7 @@ class TestCreateCase(ModLogTestCase):
         self.channel = RecordingChannel()
 
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         stored = self.cog.config.data["cases"]["1"]
@@ -264,7 +297,7 @@ class TestChannelRouting(ModLogTestCase):
         self.channel = RecordingChannel()
 
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         self.assertEqual(len(self.channel.sent), 1)
@@ -276,7 +309,7 @@ class TestChannelRouting(ModLogTestCase):
         self.cog.config.data["log_channels"] = {"categories": {"modlog": 501}, "events": {}}
 
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         self.assertEqual(len(category_channel.sent), 1)
@@ -293,7 +326,7 @@ class TestChannelRouting(ModLogTestCase):
         }
 
         await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="x"
+            self.guild, action_type="warn", actor=111, target=222, reason="x"
         )
 
         self.assertEqual(len(event_channel.sent), 1)
@@ -361,12 +394,12 @@ class TestChannelCommands(ModLogTestCase):
 class TestCasesSince(ModLogTestCase):
     async def test_filters_by_timestamp(self):
         old = await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="old"
+            self.guild, action_type="warn", actor=111, target=222, reason="old"
         )
         self.cog.config.data["cases"][str(old.case_number)]["timestamp"] = 1000.0
 
         new = await self.cog.create_case(
-            self.guild, action_type="warn", moderator=111, target=222, reason="new"
+            self.guild, action_type="warn", actor=111, target=222, reason="new"
         )
         self.cog.config.data["cases"][str(new.case_number)]["timestamp"] = 5000.0
 
@@ -380,7 +413,7 @@ class TestCasesSince(ModLogTestCase):
         case = ModLog.Case(
             action_type=self.cog.action_type("warn"),
             case_number=1,
-            moderator=111,
+            actor=111,
             target=222,
             reason="test",
             timestamp=0.0,
@@ -402,7 +435,9 @@ class TestEmbedBuilder(unittest.TestCase):
             action_name="Warning",
             action_color=discord.Colour.yellow(),
             action_emoji="⚠️",
+            target_label="Target",
             target=222,
+            actor_label="Actor",
             reason="because",
             timestamp=0.0,
         )
@@ -435,7 +470,7 @@ class TestEmbedBuilder(unittest.TestCase):
                 self.assertEqual(embed.fields[-1].name, "Reason:")
 
     def test_omitting_the_target_omits_the_field(self):
-        """A global or moderator-only action has no single member it happened
+        """A global or actor-only action has no single member it happened
         to -- shown as absent entirely, not as unavailable."""
         embed = self._build(target=None)
 
@@ -447,17 +482,32 @@ class TestEmbedBuilder(unittest.TestCase):
 
         self.assertNotIn("Target ID:", [field.name for field in embed.fields])
 
-    def test_moderator_is_omitted_when_absent(self):
+    def test_actor_is_omitted_when_absent(self):
         embed = self._build()
 
-        self.assertNotIn("Moderator:", [field.name for field in embed.fields])
+        self.assertNotIn("Actor:", [field.name for field in embed.fields])
 
     def test_detailed_exposes_raw_ids(self):
-        embed = self._build(case_number=7, moderator=111, detailed=True)
+        embed = self._build(case_number=7, actor=111, detailed=True)
         names = [field.name for field in embed.fields]
 
         self.assertIn("Target ID:", names)
-        self.assertIn("Moderator ID:", names)
+        self.assertIn("Actor ID:", names)
+
+    def test_custom_labels_and_emoji_replace_the_defaults(self):
+        embed = self._build(
+            target_label="Requester",
+            target_emoji="🙋",
+            actor=111,
+            actor_label="Approver",
+            actor_emoji="✅",
+        )
+        names = [field.name for field in embed.fields]
+
+        self.assertIn("Requester:", names)
+        self.assertIn("Approver:", names)
+        self.assertNotIn("Target:", names)
+        self.assertNotIn("Actor:", names)
 
     def test_duration_shown_only_when_set_or_detailed(self):
         names = [field.name for field in self._build().fields]

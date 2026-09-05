@@ -166,7 +166,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="spamming"
+            self.guild, action_type="warn", target=222, actor=111, reason="spamming"
         )
 
         self.assertIsInstance(ref, CaseRef)
@@ -176,12 +176,12 @@ class TestCaseRouting(ProxyTestCase):
         self.assertEqual(self.core.created, [])
 
     async def test_modlog_still_records_a_targetless_case(self):
-        """Unlike core, ModLog can represent a moderator-only action."""
+        """Unlike core, ModLog can represent an actor-only action."""
         self.load_modlog()
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", moderator=111, reason="channel-wide warning"
+            self.guild, action_type="warn", actor=111, reason="channel-wide warning"
         )
 
         self.assertIsInstance(ref, CaseRef)
@@ -194,7 +194,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertNotIsInstance(ref, ModLog.Case)
@@ -203,7 +203,7 @@ class TestCaseRouting(ProxyTestCase):
         await self.proxy.refresh()
 
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertEqual(self.core.created, ["warn"])
@@ -213,7 +213,7 @@ class TestCaseRouting(ProxyTestCase):
     async def test_display_resolves_from_declarations_without_modlog(self):
         """confirm_action and summaries still need a readable name."""
         ref = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertEqual(ref.action_name, "Warning")
@@ -235,7 +235,7 @@ class TestFallbackPolicy(ProxyTestCase):
         """Core's [p]case and [p]casesfor carry no permission check, so a core
         case would let any member deanonymise a topic-change requester."""
         result = await self.private.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertIsNone(result)
@@ -246,7 +246,7 @@ class TestFallbackPolicy(ProxyTestCase):
         await self.private.refresh()
 
         ref = await self.private.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertIsNotNone(ref)
@@ -260,7 +260,7 @@ class TestCoreFailureModes(ProxyTestCase):
         """Core's create_case takes the target as a required positional
         argument, so a targetless action never even reaches it."""
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", moderator=111, reason="x"
+            self.guild, action_type="warn", actor=111, reason="x"
         )
 
         self.assertIsNone(result)
@@ -270,7 +270,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = None
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertIsNone(result)
@@ -279,7 +279,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = "value_error"
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertIsNone(result)
@@ -288,7 +288,7 @@ class TestCoreFailureModes(ProxyTestCase):
         self.core.create_result = "runtime_error"
 
         result = await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         self.assertIsNone(result)
@@ -351,7 +351,7 @@ class TestRecentCases(ProxyTestCase):
         self.load_modlog()
         await self.proxy.refresh()
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
@@ -363,7 +363,7 @@ class TestRecentCases(ProxyTestCase):
         self.load_modlog()
         await self.proxy.refresh()
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.FAR_FUTURE)
@@ -372,7 +372,7 @@ class TestRecentCases(ProxyTestCase):
 
     async def test_reads_from_core_when_modlog_absent(self):
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
 
         refs = await self.proxy.recent_cases(self.guild, since=self.EPOCH)
@@ -385,7 +385,7 @@ class TestRecentCases(ProxyTestCase):
         through core's ungated lookups. Reading a case that already exists
         there adds no visibility core did not already have."""
         await self.proxy.create_case(
-            self.guild, action_type="warn", target=222, moderator=111, reason="x"
+            self.guild, action_type="warn", target=222, actor=111, reason="x"
         )
         private = ModLogProxy(self.cog, action_types=ACTION_TYPES, core_fallback=False)
 

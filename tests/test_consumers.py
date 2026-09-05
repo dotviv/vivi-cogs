@@ -1,7 +1,7 @@
 """Consuming cogs recording real cases through a real ModLog instance.
 
 These drive the cogs' own methods rather than mocking them, which is how the
-optional-moderator crash in Topics was found.
+optional-actor crash in Topics was found.
 """
 
 from __future__ import annotations
@@ -95,12 +95,12 @@ class TestVerification(ConsumerTestCase):
         for case in self.stored_cases.values():
             self.assertEqual(case["target_id"], 222)
 
-    async def test_the_bot_is_the_moderator(self):
+    async def test_the_bot_is_the_actor(self):
         """Nobody takes these by hand."""
         await self._record_all()
 
         for case in self.stored_cases.values():
-            self.assertEqual(case["moderator_id"], self.guild.me.id)
+            self.assertEqual(case["actor_id"], self.guild.me.id)
 
     async def test_outcomes_land_in_the_members_history(self):
         await self._record_all()
@@ -150,16 +150,16 @@ class TestTopics(ConsumerTestCase):
         self.assertTrue(await self._request())
         self.assertEqual(len(self.cases_of_type("topic_change")), 1)
 
-    async def test_requester_is_the_moderator(self):
+    async def test_requester_is_the_actor(self):
         """Anonymous in the channel, attributed in the modlog. Filing a
         request is something the requester did, not something that happened
-        to them, so they are its moderator rather than its target."""
+        to them, so they are its actor rather than its target."""
         await self._request()
 
-        self.assertEqual(self.cases_of_type("topic_change")[0]["moderator_id"], 333)
+        self.assertEqual(self.cases_of_type("topic_change")[0]["actor_id"], 333)
 
     async def test_the_case_has_no_target(self):
-        """Moderator and target being the same person would be redundant --
+        """Actor and target being the same person would be redundant --
         there is no one else the request happened to."""
         await self._request()
 
@@ -176,7 +176,7 @@ class TestTopics(ConsumerTestCase):
     async def test_request_lands_in_the_requesters_actions_not_their_cases(self):
         await self._request()
 
-        self.assertIn(1, self.modlog.config.data["moderator_cases"]["333"])
+        self.assertIn(1, self.modlog.config.data["actor_cases"]["333"])
         self.assertNotIn("user_cases", self.modlog.config.data)
 
     async def test_a_noteless_request_still_records(self):

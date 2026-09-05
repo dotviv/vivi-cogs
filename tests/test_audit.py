@@ -280,7 +280,7 @@ class TestChannelAuditing(AuditTestCase):
         self.assertEqual(len(self.structure_channel.sent), 1)
         self.assertEqual(self.stored_cases, {})
 
-    async def test_update_with_resolvable_actor_logs_with_moderator(self):
+    async def test_update_with_resolvable_actor_logs_with_actor(self):
         before = FakeGuildChannel(id=1, name="general", guild=self.guild)
         after = FakeGuildChannel(id=1, name="general-renamed", guild=self.guild)
         actor = FakeMember(333, "admin", self.guild)
@@ -289,7 +289,7 @@ class TestChannelAuditing(AuditTestCase):
         await self.cog.on_guild_channel_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Moderator:", self._fields(self.structure_channel))
+        self.assertIn("Actor:", self._fields(self.structure_channel))
         self.assertEqual(self.stored_cases, {})
 
     async def test_update_with_unresolvable_actor_still_logs(self):
@@ -300,7 +300,7 @@ class TestChannelAuditing(AuditTestCase):
         await self.cog.on_guild_channel_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertNotIn("Moderator:", self._fields(self.structure_channel))
+        self.assertNotIn("Actor:", self._fields(self.structure_channel))
 
     async def test_noop_update_produces_no_log_line(self):
         before = FakeGuildChannel(id=1, name="general", guild=self.guild)
@@ -339,7 +339,7 @@ class TestRoleAuditing(AuditTestCase):
         self.assertEqual(len(self.structure_channel.sent), 1)
         self.assertEqual(self.stored_cases, {})
 
-    async def test_update_with_resolvable_actor_logs_with_moderator(self):
+    async def test_update_with_resolvable_actor_logs_with_actor(self):
         before = FakeRole(id=1, name="Helper", guild=self.guild)
         after = FakeRole(id=1, name="Helpers", guild=self.guild)
         actor = FakeMember(333, "admin", self.guild)
@@ -348,7 +348,7 @@ class TestRoleAuditing(AuditTestCase):
         await self.cog.on_guild_role_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Moderator:", self._fields(self.structure_channel))
+        self.assertIn("Actor:", self._fields(self.structure_channel))
         self.assertEqual(self.stored_cases, {})
 
     async def test_permission_diff_is_reported(self):
@@ -456,9 +456,9 @@ class TestOverview(AuditTestCase):
         other_proxy = ModLogProxy(other, action_types=OTHER_ACTION_TYPES)
         await other_proxy.refresh()
 
-        await other_proxy.create_case(self.guild, action_type="ban", target=1, moderator=2, reason="x")
-        await other_proxy.create_case(self.guild, action_type="ban", target=3, moderator=2, reason="y")
-        await other_proxy.create_case(self.guild, action_type="warn", target=4, moderator=2, reason="z")
+        await other_proxy.create_case(self.guild, action_type="ban", target=1, actor=2, reason="x")
+        await other_proxy.create_case(self.guild, action_type="ban", target=3, actor=2, reason="y")
+        await other_proxy.create_case(self.guild, action_type="warn", target=4, actor=2, reason="z")
 
         embed = await self.cog._overview_embed(FakeOverviewContext(guild=self.guild), 24)
 

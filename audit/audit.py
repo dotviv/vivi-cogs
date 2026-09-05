@@ -34,7 +34,7 @@ class Audit(commands.Cog):
 
     Everything here is reported through :meth:`ModLogProxy.log_event`, never
     `create_case`. The modlog case model is shaped around actions taken
-    against a member -- a moderator, a target, a reason -- and none of these
+    against a member -- an actor, a target, a reason -- and none of these
     events fit that: a channel rename has no member it happened "to", and
     member role changes already get a real case from whichever cog assigned
     the role (mute/quarantine/etc.) when it matters. Reporting all of it as
@@ -330,7 +330,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_created",
             target=actor or channel.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=f"Channel {channel.mention} (`{channel.id}`) created.",
             channel=log_channel,
         )
@@ -357,7 +357,7 @@ class Audit(commands.Cog):
             after.guild,
             action_type="channel_updated",
             target=actor or after.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=reason,
             channel=log_channel,
         )
@@ -376,7 +376,7 @@ class Audit(commands.Cog):
             channel.guild,
             action_type="channel_deleted",
             target=actor or channel.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=f"Channel `#{channel.name}` (`{channel.id}`) deleted.",
             channel=log_channel,
         )
@@ -427,7 +427,7 @@ class Audit(commands.Cog):
             role.guild,
             action_type="role_created",
             target=actor or role.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=f"Role {role.mention} (`{role.id}`) created.",
             channel=log_channel,
         )
@@ -452,7 +452,7 @@ class Audit(commands.Cog):
             after.guild,
             action_type="role_updated",
             target=actor or after.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=reason,
             channel=log_channel,
         )
@@ -471,7 +471,7 @@ class Audit(commands.Cog):
             role.guild,
             action_type="role_deleted",
             target=actor or role.guild.me,
-            moderator=actor,
+            actor=actor,
             reason=f"Role `@{role.name}` (`{role.id}`) deleted.",
             channel=log_channel,
         )
@@ -511,7 +511,7 @@ class Audit(commands.Cog):
             after.guild,
             action_type="member_roles_changed",
             target=after,
-            moderator=actor,
+            actor=actor,
             reason="\n".join(parts),
             channel=log_channel,
         )

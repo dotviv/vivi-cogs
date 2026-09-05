@@ -306,7 +306,7 @@ class Quarantine(commands.Cog):
 
         return path
 
-    async def _unquarantine_and_cleanup(self, guild: discord.Guild, target_state: Dict, target: Member | User | int, moderator: Member | User, reason: str | None, audit_reason: str):
+    async def _unquarantine_and_cleanup(self, guild: discord.Guild, target_state: Dict, target: Member | User | int, actor: Member | User, reason: str | None, audit_reason: str):
         """Shared by unquarantine and the on_member_remove/on_member_ban listeners."""
 
         guild_state = await self.config.guild(guild).all()
@@ -358,7 +358,7 @@ class Quarantine(commands.Cog):
         return await self.modlog.create_case(
             guild,
             action_type="unquarantine",
-            moderator=moderator,
+            actor=actor,
             target=target_member or target,
             reason=reason,
             attachments=attachments
@@ -379,7 +379,7 @@ class Quarantine(commands.Cog):
             guild=member.guild,
             target=member,
             target_state=state,
-            moderator=member.guild.me,
+            actor=member.guild.me,
             reason="Member left or kicked.",
             audit_reason=f"Unquarantine of {member.id} by guild departure.")
 
@@ -394,7 +394,7 @@ class Quarantine(commands.Cog):
             guild=guild,
             target=user,
             target_state=state,
-            moderator=guild.me,
+            actor=guild.me,
             reason="Member was banned.",
             audit_reason=f"Unquarantine of {user.id} by ban.")
 
@@ -509,7 +509,7 @@ class Quarantine(commands.Cog):
         case = await self.modlog.create_case(
             guild,
             action_type="quarantine",
-            moderator=ctx.author,
+            actor=ctx.author,
             target=member,
             reason=reason)
 
@@ -554,7 +554,7 @@ class Quarantine(commands.Cog):
 
         audit_reason = f"Unquarantine of {member} by {ctx.author}."
 
-        case = await self._unquarantine_and_cleanup(guild=guild, target_state=member_state, target=member, moderator=ctx.author, reason=reason, audit_reason=audit_reason)
+        case = await self._unquarantine_and_cleanup(guild=guild, target_state=member_state, target=member, actor=ctx.author, reason=reason, audit_reason=audit_reason)
 
         # The transcript is written to disk either way, but only ModLog can
         # attach it to the case. Say so rather than letting it vanish quietly.

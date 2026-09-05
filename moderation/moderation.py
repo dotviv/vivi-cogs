@@ -81,7 +81,7 @@ class Moderation(commands.Cog):
             guild,
             action_type="warn",
             target=target,
-            moderator=ctx.author,
+            actor=ctx.author,
             reason=reason)
 
         await self.modlog.send_case_action_summary(ctx, case, ephemeral=False) # Non-ephemeral, warnings need to surface so members can see their warnings.
@@ -111,7 +111,7 @@ class Moderation(commands.Cog):
             guild,
             action_type="kick",
             target=target,
-            moderator=ctx.author,
+            actor=ctx.author,
             reason=reason)
 
         await guild.kick(target, reason=audit_reason(case, reason))
@@ -143,7 +143,7 @@ class Moderation(commands.Cog):
             guild,
             action_type="ban",
             target=target,
-            moderator=ctx.author,
+            actor=ctx.author,
             reason=reason)
 
         await guild.ban(
@@ -184,7 +184,7 @@ class Moderation(commands.Cog):
             guild,
             action_type="unban",
             target=target,
-            moderator=ctx.author,
+            actor=ctx.author,
             reason=reason)
 
         await guild.unban(target, reason=audit_reason(case, reason))

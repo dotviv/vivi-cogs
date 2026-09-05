@@ -330,6 +330,11 @@ class ModLog(commands.Cog):
         color: Colour,
         emoji: str | None = None,
         category: str = DEFAULT_CATEGORY,
+        requires_reason: bool = False,
+        target_label: str = "Target",
+        target_emoji: str = "🎯",
+        actor_label: str = "Actor",
+        actor_emoji: str = "🛡️",
     ) -> None:
         """Register an action type this ModLog can create cases for.
 
@@ -346,7 +351,16 @@ class ModLog(commands.Cog):
             category = DEFAULT_CATEGORY
 
         self._action_types[type] = ModLog.ActionType(
-            type=type, name=name, color=color, emoji=emoji, category=category
+            type=type,
+            name=name,
+            color=color,
+            emoji=emoji,
+            category=category,
+            requires_reason=requires_reason,
+            target_label=target_label,
+            target_emoji=target_emoji,
+            actor_label=actor_label,
+            actor_emoji=actor_emoji,
         )
 
     def action_type(self, action_type: str) -> ModLog.ActionType | None:
@@ -709,8 +723,8 @@ class ModLog(commands.Cog):
         """Returns actor actions taken by a specific user.
 
         A case is something that happened *to* someone (`[p]cases`); an action
-        is something a actor *did* -- this reads that second index, which
-        every case with a actor is filed under regardless of whether it
+        is something an actor *did* -- this reads that second index, which
+        every case with an actor is filed under regardless of whether it
         also has a target.
         """
 
