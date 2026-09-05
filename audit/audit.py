@@ -543,7 +543,7 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             member.guild,
             action_type="member_joined",
-            target=member,
+            actor=member,
             fields=[
                 field("Account Created", discord.utils.format_dt(member.created_at, "R"), inline=True),
                 field("Member Count", f"`{member.guild.member_count}`", inline=True),
@@ -566,7 +566,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             member.guild,
             action_type="member_left",
-            target=member,
             actor=actor,
             fields=[
                 field("Joined", joined, inline=True),
