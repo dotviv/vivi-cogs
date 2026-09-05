@@ -49,23 +49,23 @@ class Audit(commands.Cog):
     # these -- none of them are ever passed to `create_case`.
     ACTION_TYPES = (
         {"type": "message_edited", "name": "Message Edited",
-         "color": discord.Colour.orange(), "emoji": "✏️", "category": "memberlog"},
+         "color": discord.Colour.orange(), "emoji": "✏️", "category": "memberlog", "actor_label": "Member"},
         {"type": "message_deleted", "name": "Message Deleted",
-         "color": discord.Colour.red(), "emoji": "🗑️", "category": "memberlog"},
+         "color": discord.Colour.red(), "emoji": "🗑️", "category": "memberlog", "actor_label": "Member"},
         {"type": "channel_created", "name": "Channel Created",
-         "color": discord.Colour.green(), "emoji": "📁", "category": "adminlog"},
+         "color": discord.Colour.green(), "emoji": "📁", "category": "adminlog", "actor_label": "Admin"},
         {"type": "channel_updated", "name": "Channel Updated",
-         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog"},
+         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog", "actor_label": "Admin"},
         {"type": "channel_deleted", "name": "Channel Deleted",
-         "color": discord.Colour.red(), "emoji": "🗑️", "category": "adminlog"},
+         "color": discord.Colour.red(), "emoji": "🗑️", "category": "adminlog", "actor_label": "Admin"},
         {"type": "role_created", "name": "Role Created",
-         "color": discord.Colour.green(), "emoji": "🏷️", "category": "adminlog"},
+         "color": discord.Colour.green(), "emoji": "🏷️", "category": "adminlog", "actor_label": "Admin"},
         {"type": "role_updated", "name": "Role Updated",
-         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog"},
+         "color": discord.Colour.blurple(), "emoji": "🛠️", "category": "adminlog", "actor_label": "Admin"},
         {"type": "role_deleted", "name": "Role Deleted",
-         "color": discord.Colour.red(), "emoji": "🏷️", "category": "adminlog"},
+         "color": discord.Colour.red(), "emoji": "🏷️", "category": "adminlog", "actor_label": "Admin"},
         {"type": "member_roles_changed", "name": "Member Roles Changed",
-         "color": discord.Colour.blurple(), "emoji": "🧩", "category": "memberlog"},
+         "color": discord.Colour.blurple(), "emoji": "🧩", "category": "memberlog", "actor_label": "Admin"},
     )
 
     #: Categories audit actually emits events into -- "modlog" is deliberately
@@ -219,7 +219,7 @@ class Audit(commands.Cog):
                 f"**Before:** {_truncate(cached.content)}\n"
                 f"**After:** {_truncate(after_content)}"
             )
-            target = cached.author
+            actor = cached.author
         else:
             if author_data.get("bot"):
                 return
@@ -227,7 +227,7 @@ class Audit(commands.Cog):
             if author_id is None:
                 log.debug("Edited message %s had no cached content or author; skipping.", payload.message_id)
                 return
-            target = guild.get_member(int(author_id)) or int(author_id)
+            actor = guild.get_member(int(author_id)) or int(author_id)
             reason = "Message content unavailable (not cached)."
 
         jump_url = f"https://discord.com/channels/{guild.id}/{payload.channel_id}/{payload.message_id}"
@@ -236,7 +236,7 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             guild,
             action_type="message_edited",
-            target=target,
+            actor=actor,
             reason=reason,
             channel=channel,
         )
@@ -271,7 +271,7 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             guild,
             action_type="message_deleted",
-            target=cached.author,
+            actor=cached.author,
             reason=f"Deleted in {location}.\n**Content:** {content}",
             channel=channel,
         )
@@ -329,7 +329,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             channel.guild,
             action_type="channel_created",
-            target=actor or channel.guild.me,
             actor=actor,
             reason=f"Channel {channel.mention} (`{channel.id}`) created.",
             channel=log_channel,
@@ -356,7 +355,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             after.guild,
             action_type="channel_updated",
-            target=actor or after.guild.me,
             actor=actor,
             reason=reason,
             channel=log_channel,
@@ -375,7 +373,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             channel.guild,
             action_type="channel_deleted",
-            target=actor or channel.guild.me,
             actor=actor,
             reason=f"Channel `#{channel.name}` (`{channel.id}`) deleted.",
             channel=log_channel,
@@ -426,7 +423,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             role.guild,
             action_type="role_created",
-            target=actor or role.guild.me,
             actor=actor,
             reason=f"Role {role.mention} (`{role.id}`) created.",
             channel=log_channel,
@@ -451,7 +447,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             after.guild,
             action_type="role_updated",
-            target=actor or after.guild.me,
             actor=actor,
             reason=reason,
             channel=log_channel,
@@ -470,7 +465,6 @@ class Audit(commands.Cog):
         await self.modlog.log_event(
             role.guild,
             action_type="role_deleted",
-            target=actor or role.guild.me,
             actor=actor,
             reason=f"Role `@{role.name}` (`{role.id}`) deleted.",
             channel=log_channel,
