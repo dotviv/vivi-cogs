@@ -283,7 +283,7 @@ class Audit(commands.Cog):
             actor=cached.author,
             fields=[
                 field(f"Channel", f"{channel.mention}"),
-                field("Message ID", str(payload.message_id)),
+                field("Message ID", f"`{str(payload.message_id)}`"),
                 field("Content", f"{content}"),
             ],
             channel=channel,
