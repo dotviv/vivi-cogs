@@ -16,6 +16,7 @@ from redbot.core.commands import Context
 from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.chat_formatting import humanize_list
 
+from ._common.actor_tiers import resolve_actor_display
 from ._common.interactions import Interactions, PageEmbedProvider
 from ._common.log_channels import (
     CATEGORIES,
@@ -52,13 +53,14 @@ class ModLog(commands.Cog):
         requires_reason: bool
         target_label: str
         target_emoji: str
-        actor_label: str
-        actor_emoji: str
+        actor_label: str | None
+        actor_emoji: str | None
 
         def __init__(
             self, *, type: str, name: str, color: Colour, emoji: str | None, category: str = DEFAULT_CATEGORY,
                 requires_reason: bool = False,
-                target_label: str = "Target", target_emoji: str = "🎯", actor_label: str = "Actor", actor_emoji: str = "🛡️"
+                target_label: str = "Target", target_emoji: str = "🎯",
+                actor_label: str | None = None, actor_emoji: str | None = None
         ):
             self.type = type
             self.name = name
@@ -82,6 +84,8 @@ class ModLog(commands.Cog):
         timestamp: float
         duration: str | None
         attachments: List[Path]
+        actor_label: str
+        actor_emoji: str | None
 
         def __init__(
             self,
@@ -96,6 +100,8 @@ class ModLog(commands.Cog):
             attachments: List[Path] | None = None,
             channel_id: int | None = None,
             message_id: int | None = None,
+            actor_label: str = "Actor",
+            actor_emoji: str | None = "🛡️",
         ):
             self.action_type = action_type
             self.case_number = case_number
@@ -105,6 +111,13 @@ class ModLog(commands.Cog):
             self.timestamp = timestamp
             self.duration = duration
             self.attachments = attachments or []
+
+            # Frozen at creation (see resolve_actor_display), not read off
+            # action_type -- a case must keep showing the tier the actor held
+            # when the action happened, not whatever they are promoted/demoted
+            # to afterward.
+            self.actor_label = actor_label
+            self.actor_emoji = actor_emoji
 
             # These stay None until the case is posted, and stay None forever if
             # the guild has no modlog channel. They must be assigned here rather
@@ -139,6 +152,8 @@ class ModLog(commands.Cog):
                 "attachments": [str(p) for p in self.attachments],
                 "actor_id": self._identifier(self.actor),
                 "target_id": self._identifier(self.target),
+                "actor_label": self.actor_label,
+                "actor_emoji": self.actor_emoji,
             }
 
         @classmethod
@@ -185,6 +200,11 @@ class ModLog(commands.Cog):
                 attachments=[Path(s) for s in data.get("attachments", [])],
                 channel_id=data.get("channel_id"),
                 message_id=data.get("message_id"),
+                # A case stored before dynamic actor tiers existed has no frozen
+                # badge to recover -- it gets the old static default rather than
+                # an after-the-fact guess at what the actor's role was then.
+                actor_label=data.get("actor_label", "Actor"),
+                actor_emoji=data.get("actor_emoji", "🛡️"),
             )
 
     class CasePageEmbedProvider(PageEmbedProvider):
@@ -333,8 +353,8 @@ class ModLog(commands.Cog):
         requires_reason: bool = False,
         target_label: str = "Target",
         target_emoji: str = "🎯",
-        actor_label: str = "Actor",
-        actor_emoji: str = "🛡️",
+        actor_label: str | None = None,
+        actor_emoji: str | None = None,
     ) -> None:
         """Register an action type this ModLog can create cases for.
 
@@ -345,6 +365,10 @@ class ModLog(commands.Cog):
 
         An unrecognized ``category`` is coerced to the default rather than
         raising -- registration replay across a reload must stay best-effort.
+
+        Leaving ``actor_label``/``actor_emoji`` unset (``None``) means "resolve it
+        dynamically from the actor's standing in the guild" -- see
+        ``resolve_actor_display``. Setting either overrides that entirely.
         """
         if category not in CATEGORIES:
             log.warning("Unknown category %r for action type %s; using %r.", category, type, DEFAULT_CATEGORY)
@@ -404,15 +428,21 @@ class ModLog(commands.Cog):
         Consuming cogs render their actor summaries with the same function
         from their own vendored copy, so a case looks the same in the channel
         and in the reply that follows the action.
+
+        The actor label/emoji come from the case itself, not ``action_type``:
+        they were frozen in at creation (see ``create_case``) so a case keeps
+        showing the tier the actor held at the time, not whatever they've been
+        promoted or demoted to since. ``target_label``/``target_emoji`` are not
+        dynamic, so those still come from the registry.
         """
         return build_case_embed(
             action_name=case.action_type.name,
             action_color=case.action_type.color,
             action_emoji=case.action_type.emoji,
             case_number=case.case_number,
-            actor_label=case.action_type.actor_label,
+            actor_label=case.actor_label,
             actor=case.actor,
-            actor_emoji=case.action_type.actor_emoji,
+            actor_emoji=case.actor_emoji,
             target_label=case.action_type.target_label,
             target=case.target,
             target_emoji=case.action_type.target_emoji,
@@ -492,20 +522,36 @@ class ModLog(commands.Cog):
         if isinstance(target, int):
             resolved_target = guild.get_member(target) or self.bot.get_user(target) or target
 
+        resolved_actor = actor
+        if isinstance(actor, int):
+            resolved_actor = guild.get_member(actor) or self.bot.get_user(actor) or actor
+
         case_number = await self._next_case_number(guild)
 
         if not reason and registered.requires_reason:
             reason = f"Responsible actor, use `[p]reason {case_number}` to set the reason for this case."
 
+        if resolved_actor is None:
+            actor_label, actor_emoji = "Actor", "🛡️"
+        else:
+            actor_label, actor_emoji = await resolve_actor_display(
+                self.bot,
+                resolved_actor,
+                configured_label=registered.actor_label,
+                configured_emoji=registered.actor_emoji,
+            )
+
         case = ModLog.Case(
             action_type=registered,
             case_number=case_number,
-            actor=actor,
+            actor=resolved_actor,
             target=resolved_target,
             reason=reason,
             timestamp=datetime.datetime.now(datetime.timezone.utc).timestamp(),
             duration=duration,
             attachments=attachments,
+            actor_label=actor_label,
+            actor_emoji=actor_emoji,
         )
 
         # Store before posting. A case is a record first and a message second --
@@ -523,7 +569,7 @@ class ModLog(commands.Cog):
                 member_cases.append(case_number)
                 await user_cases.set_raw(str(target_id), value=member_cases)
 
-        actor_id = ModLog.Case._identifier(actor)
+        actor_id = ModLog.Case._identifier(resolved_actor)
         if actor_id is not None:
             actor_cases = self.config.guild(guild).actor_cases
             async with actor_cases.get_lock():

@@ -10,7 +10,7 @@ import modlog.modlog as modlog_module
 from common.modlog_render import build_case_embed
 from modlog.modlog import ModLog, UnknownActionType
 
-from tests.helpers import FakeBot, FakeGuild, RecordingChannel, make_modlog_cog
+from tests.helpers import FakeBot, FakeGuild, FakeMember, RecordingChannel, make_modlog_cog
 
 
 class FakeCommandContext:
@@ -80,12 +80,16 @@ class TestActionTypeRegistry(ModLogTestCase):
         self.assertEqual(self.cog.action_type("warn").category, "modlog")
 
     def test_unset_display_fields_default(self):
+        """actor_label/actor_emoji default to None -- the sentinel that tells
+        resolve_actor_display to fall back to dynamic tier resolution rather
+        than a fixed label. target_label/target_emoji are never dynamic, so
+        those still default to a concrete value."""
         registered = self.cog.action_type("warn")
 
         self.assertEqual(registered.target_label, "Target")
         self.assertEqual(registered.target_emoji, "🎯")
-        self.assertEqual(registered.actor_label, "Actor")
-        self.assertEqual(registered.actor_emoji, "🛡️")
+        self.assertIsNone(registered.actor_label)
+        self.assertIsNone(registered.actor_emoji)
         self.assertFalse(registered.requires_reason)
 
     def test_custom_display_fields_round_trip(self):
@@ -191,6 +195,42 @@ class TestCaseSerialisation(ModLogTestCase):
         embed = self.cog.case_embed(rebuilt)
         self.assertNotIn("Target:", [field.name for field in embed.fields])
 
+    def test_actor_label_and_emoji_round_trip(self):
+        """The frozen tier survives storage -- to_dict/from_dict must not
+        silently drop it back to the static default."""
+        payload = self._case(actor_label="Admin", actor_emoji="⚔️").to_dict()
+
+        self.assertEqual(payload["actor_label"], "Admin")
+        self.assertEqual(payload["actor_emoji"], "⚔️")
+
+        rebuilt = self.cog.case_from_dict(self.guild, payload)
+        self.assertEqual(rebuilt.actor_label, "Admin")
+        self.assertEqual(rebuilt.actor_emoji, "⚔️")
+
+    def test_case_embed_renders_the_frozen_label_not_the_registry(self):
+        """case_embed must read actor_label/actor_emoji off the case itself,
+        not action_type -- action_type's are unconfigured (None) for "warn",
+        which would break embed rendering if read directly."""
+        case = self._case(actor_label="Owner", actor_emoji="👑")
+
+        embed = self.cog.case_embed(case)
+        names = {field.name: field.value for field in embed.fields}
+
+        self.assertIn("Owner:", names)
+
+    def test_old_stored_case_without_a_frozen_tier_gets_the_static_default(self):
+        """A case stored before dynamic tiers existed has no actor_label/
+        actor_emoji keys at all -- from_dict must not raise, and must not
+        guess; it falls back to the old static default."""
+        payload = self._case().to_dict()
+        del payload["actor_label"]
+        del payload["actor_emoji"]
+
+        rebuilt = self.cog.case_from_dict(self.guild, payload)
+
+        self.assertEqual(rebuilt.actor_label, "Actor")
+        self.assertEqual(rebuilt.actor_emoji, "🛡️")
+
 
 class TestCreateCase(ModLogTestCase):
     async def test_numbers_cases_sequentially(self):
@@ -288,6 +328,50 @@ class TestCreateCase(ModLogTestCase):
         self.assertEqual(len(self.channel.sent), 1)
         self.assertEqual(stored["channel_id"], 444)
         self.assertEqual(stored["message_id"], 555)
+
+    async def test_actor_tier_is_resolved_and_frozen_onto_the_case(self):
+        """warn's actor_label/actor_emoji are unconfigured (None), so
+        create_case resolves the actor's real tier and freezes it onto the
+        Case -- a later re-render must not need to look it up again."""
+        actor = FakeMember(111, "admin", self.guild)
+        self.bot.admin_ids.add(111)
+
+        case = await self.cog.create_case(
+            self.guild, action_type="warn", actor=actor, target=222, reason="x"
+        )
+
+        self.assertEqual(case.actor_label, "Admin")
+        self.assertEqual(case.actor_emoji, "⚔️")
+        self.assertEqual(self.cog.config.data["cases"]["1"]["actor_label"], "Admin")
+        self.assertEqual(self.cog.config.data["cases"]["1"]["actor_emoji"], "⚔️")
+
+    async def test_configured_actor_label_bypasses_dynamic_resolution(self):
+        """A registered actor_label always wins, even for an actor who would
+        otherwise resolve as the guild owner."""
+        self.cog.register_action_type(
+            type="topic_change", name="Topic Change", color=discord.Colour.blue(),
+            emoji="💬", actor_label="Requester", actor_emoji="🙋",
+        )
+        owner = FakeMember(999, "owner", self.guild)
+        self.guild.owner_id = 999
+
+        case = await self.cog.create_case(
+            self.guild, action_type="topic_change", actor=owner, reason="x"
+        )
+
+        self.assertEqual(case.actor_label, "Requester")
+        self.assertEqual(case.actor_emoji, "🙋")
+
+    async def test_no_actor_gets_the_static_placeholder(self):
+        """An unattributed/automated action with no actor at all has no tier
+        to resolve -- the placeholder is never rendered anyway since
+        build_case_embed omits the whole field when actor is None."""
+        case = await self.cog.create_case(
+            self.guild, action_type="warn", actor=None, target=222, reason="x"
+        )
+
+        self.assertEqual(case.actor_label, "Actor")
+        self.assertEqual(case.actor_emoji, "🛡️")
 
 
 class TestChannelRouting(ModLogTestCase):

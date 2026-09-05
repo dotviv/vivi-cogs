@@ -102,6 +102,16 @@ class TestVerification(ConsumerTestCase):
         for case in self.stored_cases.values():
             self.assertEqual(case["actor_id"], self.guild.me.id)
 
+    async def test_the_bot_gets_the_bot_tier_not_admin(self):
+        """guild.me usually holds admin-level permissions to function, but an
+        automated verification outcome must never read as a human admin's
+        decision -- it's tagged as Bot instead."""
+        await self._record_all()
+
+        for case in self.stored_cases.values():
+            self.assertEqual(case["actor_label"], "Bot")
+            self.assertEqual(case["actor_emoji"], "🤖")
+
     async def test_outcomes_land_in_the_members_history(self):
         await self._record_all()
 

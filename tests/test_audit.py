@@ -281,15 +281,19 @@ class TestChannelAuditing(AuditTestCase):
         self.assertEqual(self.stored_cases, {})
 
     async def test_update_with_resolvable_actor_logs_with_actor(self):
+        """The resolved actor's tier is looked up dynamically -- this one is
+        registered as an admin, so the case is filed under "Admin", not a
+        fixed "Actor" label."""
         before = FakeGuildChannel(id=1, name="general", guild=self.guild)
         after = FakeGuildChannel(id=1, name="general-renamed", guild=self.guild)
         actor = FakeMember(333, "admin", self.guild)
+        self.bot.admin_ids.add(333)
         self.set_audit_log_entries([FakeAuditLogEntry(target=types.SimpleNamespace(id=1), user=actor)])
 
         await self.cog.on_guild_channel_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Actor:", self._fields(self.structure_channel))
+        self.assertIn("Admin:", self._fields(self.structure_channel))
         self.assertEqual(self.stored_cases, {})
 
     async def test_update_with_unresolvable_actor_still_logs(self):
@@ -340,15 +344,19 @@ class TestRoleAuditing(AuditTestCase):
         self.assertEqual(self.stored_cases, {})
 
     async def test_update_with_resolvable_actor_logs_with_actor(self):
+        """The resolved actor's tier is looked up dynamically -- this one is
+        registered as an admin, so the case is filed under "Admin", not a
+        fixed "Actor" label."""
         before = FakeRole(id=1, name="Helper", guild=self.guild)
         after = FakeRole(id=1, name="Helpers", guild=self.guild)
         actor = FakeMember(333, "admin", self.guild)
+        self.bot.admin_ids.add(333)
         self.set_audit_log_entries([FakeAuditLogEntry(target=types.SimpleNamespace(id=1), user=actor)])
 
         await self.cog.on_guild_role_update(before, after)
 
         self.assertEqual(len(self.structure_channel.sent), 1)
-        self.assertIn("Actor:", self._fields(self.structure_channel))
+        self.assertIn("Admin:", self._fields(self.structure_channel))
         self.assertEqual(self.stored_cases, {})
 
     async def test_permission_diff_is_reported(self):

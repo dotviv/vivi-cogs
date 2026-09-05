@@ -45,6 +45,7 @@ from discord import Colour, Member, User, Guild
 from redbot.core import commands, modlog as core_modlog
 from redbot.core.commands import Context
 
+from .actor_tiers import resolve_actor_display
 from .interactions import ConfirmationView
 from .modlog_render import build_case_embed
 
@@ -190,6 +191,12 @@ class ModLogProxy:
         Prefers ModLog's registry so a type registered by another cog still
         renders correctly, then falls back to this cog's own declarations, then
         to the bare type name.
+
+        ``actor_label``/``actor_emoji`` are ``None`` unless explicitly
+        registered/declared -- that's the "not configured, resolve it
+        dynamically" sentinel ``resolve_actor_display`` expects.
+        ``target_label``/``target_emoji`` are never dynamic, so those always
+        carry a concrete default.
         """
         modlog = self.cog_instance
 
@@ -215,8 +222,8 @@ class ModLogProxy:
                 "emoji": declared.get("emoji"),
                 "target_label": declared.get("target_label", "Target"),
                 "target_emoji": declared.get("target_emoji", "🎯"),
-                "actor_label": declared.get("actor_label", "Actor"),
-                "actor_emoji": declared.get("actor_emoji", "🛡️"),
+                "actor_label": declared.get("actor_label"),
+                "actor_emoji": declared.get("actor_emoji"),
             }
 
         log.warning("No registered or declared action type for %s.", action_type)
@@ -226,8 +233,8 @@ class ModLogProxy:
             "emoji": None,
             "target_label": "Target",
             "target_emoji": "🎯",
-            "actor_label": "Actor",
-            "actor_emoji": "🛡️",
+            "actor_label": None,
+            "actor_emoji": None,
         }
 
     ### ----------------------------------------------------------------
@@ -351,7 +358,7 @@ class ModLogProxy:
             log.debug("Core casetype %s is disabled in guild %s.", action_type, guild.id)
             return None
 
-        return self._case_ref_from_core_case(
+        return await self._case_ref_from_core_case(
             case,
             action_type=action_type,
             actor=actor,
@@ -361,7 +368,13 @@ class ModLogProxy:
         )
 
     def _case_ref_from_modlog_case(self, case) -> CaseRef:
-        """Build a ``CaseRef`` from a live ModLog ``Case`` instance."""
+        """Build a ``CaseRef`` from a live ModLog ``Case`` instance.
+
+        ``actor_label``/``actor_emoji`` come from the case itself, not
+        ``action_type`` -- ModLog freezes them in at creation time (see
+        ``resolve_actor_display``), so a case keeps the tier the actor held
+        then, not whatever they are now.
+        """
         return CaseRef(
             action_type=case.action_type.type,
             action_name=case.action_type.name,
@@ -375,12 +388,12 @@ class ModLogProxy:
             duration=case.duration,
             target_label=case.action_type.target_label,
             target_emoji=case.action_type.target_emoji,
-            actor_label=case.action_type.actor_label,
-            actor_emoji=case.action_type.actor_emoji,
+            actor_label=case.actor_label,
+            actor_emoji=case.actor_emoji,
             source="modlog",
         )
 
-    def _case_ref_from_core_case(
+    async def _case_ref_from_core_case(
         self,
         case,
         *,
@@ -396,8 +409,27 @@ class ModLogProxy:
         stored, but callers of ``create_case`` know theirs precisely and a
         freshly created case may not have them resolved to full objects yet,
         so the values passed in are preferred over re-reading the case.
+
+        Unlike ModLog, core has no field to freeze a resolved actor tier into
+        -- it's Red's own schema, not ours. So the tier is resolved fresh right
+        here every time: accurate for the confirmation embed shown immediately
+        after an action, but a much later re-read of an old core-fallback case
+        (e.g. via :meth:`recent_cases`) reflects the actor's tier *now*, not
+        whatever it was back then. This mirrors core's other losses on this
+        path (no attachments, no real duration).
         """
         display = self._display(action_type)
+
+        if actor is None:
+            actor_label, actor_emoji = "Actor", "🛡️"
+        else:
+            actor_label, actor_emoji = await resolve_actor_display(
+                self.bot,
+                actor,
+                configured_label=display["actor_label"],
+                configured_emoji=display["actor_emoji"],
+            )
+
         created_at = getattr(case, "created_at", None)
 
         if isinstance(created_at, datetime.datetime):
@@ -420,8 +452,8 @@ class ModLogProxy:
             duration=duration,
             target_label=display["target_label"],
             target_emoji=display["target_emoji"],
-            actor_label=display["actor_label"],
-            actor_emoji=display["actor_emoji"],
+            actor_label=actor_label,
+            actor_emoji=actor_emoji,
             source="core",
         )
 
@@ -457,7 +489,7 @@ class ModLogProxy:
                 continue
 
             refs.append(
-                self._case_ref_from_core_case(
+                await self._case_ref_from_core_case(
                     case,
                     action_type=case.action_type,
                     actor=getattr(case, "moderator", None),
@@ -502,6 +534,16 @@ class ModLogProxy:
 
         display = self._display(action_type)
 
+        if actor is None:
+            actor_label, actor_emoji = "Actor", "🛡️"
+        else:
+            actor_label, actor_emoji = await resolve_actor_display(
+                self.bot,
+                actor,
+                configured_label=display["actor_label"],
+                configured_emoji=display["actor_emoji"],
+            )
+
         embed = build_case_embed(
             action_name=display["name"],
             action_color=display["color"],
@@ -509,9 +551,9 @@ class ModLogProxy:
             target_label=display["target_label"],
             target=target,
             target_emoji=display["target_emoji"],
-            actor_label=display["actor_label"],
+            actor_label=actor_label,
             actor=actor,
-            actor_emoji=display["actor_emoji"],
+            actor_emoji=actor_emoji,
             reason=reason,
             timestamp=timestamp or datetime.datetime.now(datetime.timezone.utc).timestamp(),
         )

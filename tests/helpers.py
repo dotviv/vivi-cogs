@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from importlib import import_module
 from typing import Any, Dict, List, Tuple
 
 
@@ -100,19 +101,25 @@ class FakeConfig:
 
 
 class FakeUser:
-    def __init__(self, user_id: int, name: str) -> None:
+    def __init__(self, user_id: int, name: str, *, bot: bool = False) -> None:
         self.id = user_id
         self.name = name
         self.mention = f"<@{user_id}>"
+        #: Mirrors discord.py's real attribute -- resolve_actor_display checks
+        #: this first so an automated action never reads as a human admin.
+        self.bot = bot
 
 
 class FakeGuild:
     id = 999
 
-    def __init__(self) -> None:
-        self.me = FakeUser(1, "ViviBot")
+    def __init__(self, *, owner_id: int = 0) -> None:
+        self.me = FakeUser(1, "ViviBot", bot=True)
         #: channel_id -> channel object, for tests exercising log-channel routing.
         self.channels: Dict[int, Any] = {}
+        #: 0 by default -- distinct from any real test member's id, so nobody
+        #: accidentally resolves as owner unless a test sets this explicitly.
+        self.owner_id = owner_id
 
     def get_member(self, member_id: int):
         return None
@@ -122,8 +129,8 @@ class FakeGuild:
 
 
 class FakeMember(FakeUser):
-    def __init__(self, user_id: int, name: str, guild: FakeGuild) -> None:
-        super().__init__(user_id, name)
+    def __init__(self, user_id: int, name: str, guild: FakeGuild, *, bot: bool = False) -> None:
+        super().__init__(user_id, name, bot=bot)
         self.guild = guild
 
 
@@ -136,12 +143,26 @@ class FakeBot:
     def __init__(self) -> None:
         self.cogs: Dict[str, Any] = {}
         self.guilds: List[Any] = []
+        #: IDs a test has opted into a tier by adding to the matching set --
+        #: empty by default, so nobody is an owner/admin/mod unless a test says so.
+        self.owner_ids: set[int] = set()
+        self.admin_ids: set[int] = set()
+        self.mod_ids: set[int] = set()
 
     def get_cog(self, name: str):
         return self.cogs.get(name)
 
     def get_user(self, user_id: int):
         return None
+
+    async def is_owner(self, user) -> bool:
+        return getattr(user, "id", user) in self.owner_ids
+
+    async def is_admin(self, user) -> bool:
+        return getattr(user, "id", user) in self.admin_ids
+
+    async def is_mod(self, user) -> bool:
+        return getattr(user, "id", user) in self.mod_ids
 
 
 class FakeMessage:
@@ -238,3 +259,44 @@ def make_modlog_cog(bot: FakeBot):
     cog.config = FakeConfig()
     cog._action_types = {}
     return cog
+
+
+async def _stub_is_admin_or_superior(bot, obj) -> bool:
+    return await bot.is_owner(obj) or await bot.is_admin(obj)
+
+
+async def _stub_is_mod_or_superior(bot, obj) -> bool:
+    return await bot.is_owner(obj) or await bot.is_mod(obj)
+
+
+#: Every cog that vendors common/actor_tiers.py, by import path.
+_VENDORED_COGS = ("audit", "moderation", "modlog", "quarantine", "topics", "verification")
+
+
+def install_actor_tier_stubs() -> None:
+    """Swap Red's real ``is_admin_or_superior``/``is_mod_or_superior`` for stubs
+    that accept ``FakeMember``/``FakeUser``.
+
+    Red's versions do a strict ``isinstance(obj, discord.Member)`` check that no
+    plain test double can satisfy without subclassing a real discord.py type.
+    The stubs check ``FakeBot.is_owner``/``is_admin``/``is_mod`` instead, which
+    tests configure via ``FakeBot.owner_ids``/``admin_ids``/``mod_ids``.
+
+    Each cog carries its own vendored copy of ``actor_tiers.py`` -- these are
+    distinct module objects even though the source is identical, so every one
+    needs patching. Importing ``verification``'s copy pulls in the real
+    ``verification`` package first (its ``__init__.py`` imports the cog module,
+    which imports the Pillow-dependent captcha code), so the PIL stub must be
+    installed before that import happens.
+    """
+    install_pil_stub()
+
+    modules = [import_module("common.actor_tiers")]
+    modules.extend(import_module(f"{cog}._common.actor_tiers") for cog in _VENDORED_COGS)
+
+    for module in modules:
+        module.is_admin_or_superior = _stub_is_admin_or_superior
+        module.is_mod_or_superior = _stub_is_mod_or_superior
+
+
+install_actor_tier_stubs()
