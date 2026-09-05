@@ -67,6 +67,10 @@ class Audit(commands.Cog):
          "color": discord.Colour.red(), "emoji": "🏷️", "category": "adminlog"},
         {"type": "member_roles_changed", "name": "Member Roles Changed",
          "color": discord.Colour.blurple(), "emoji": "🧩", "category": "memberlog"},
+        {"type": "member_joined", "name": "Member Joined",
+         "color": discord.Colour.green(), "emoji": "📥", "category": "memberlog"},
+        {"type": "member_left", "name": "Member Left",
+         "color": discord.Colour.dark_orange(), "emoji": "📤", "category": "memberlog"},
     )
 
     #: Categories audit actually emits events into -- "modlog" is deliberately
@@ -523,6 +527,51 @@ class Audit(commands.Cog):
             target=after,
             actor=actor,
             fields=fields,
+            channel=log_channel,
+        )
+
+    ### ----------------------------------------------------------------
+    ### Member joins / leaves
+    ### ----------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member) -> None:
+        log_channel = await self._channel_for(member.guild, "member_joined")
+        if log_channel is None:
+            return
+
+        await self.modlog.log_event(
+            member.guild,
+            action_type="member_joined",
+            target=member,
+            fields=[
+                field("Account Created", discord.utils.format_dt(member.created_at, "R"), inline=True),
+                field("Member Count", f"`{member.guild.member_count}`", inline=True),
+            ],
+            channel=log_channel,
+        )
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        log_channel = await self._channel_for(member.guild, "member_left")
+        if log_channel is None:
+            return
+
+        actor = await self._find_actor(
+            member.guild, action=discord.AuditLogAction.kick, target_id=member.id
+        )
+
+        joined = discord.utils.format_dt(member.joined_at, "R") if member.joined_at else "*unknown*"
+
+        await self.modlog.log_event(
+            member.guild,
+            action_type="member_left",
+            target=member,
+            actor=actor,
+            fields=[
+                field("Joined", joined, inline=True),
+                field("Member Count", f"`{member.guild.member_count}`", inline=True),
+            ],
             channel=log_channel,
         )
 

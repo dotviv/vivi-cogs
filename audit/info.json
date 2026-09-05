@@ -2,8 +2,8 @@
     "author": ["vivirancy"],
     "name": "audit",
     "install_msg": "Thank you for installing audit!\nUse `[p]auditset` to get started.",
-    "short": "Logs message edits/deletes and channel/role changes to dedicated channels.",
-    "description": "Reports message edits and deletions, channel changes, role changes, and member role grants/revokes to channels you configure with `[p]auditset category` (adminlog/memberlog defaults) or `[p]auditset event` (per-event overrides). Also adds `[p]audit overview`, a digest of recent modlog case activity from other cogs. Command usage, reactions, and voice-channel auditing are not implemented yet. Upgrading from the older `messagechannel`/`structurechannel` channels migrates them automatically on load.",
+    "short": "Logs message edits/deletes, channel/role changes, and member joins/leaves to dedicated channels.",
+    "description": "Reports message edits and deletions, channel changes, role changes, member role grants/revokes, and member joins/leaves to channels you configure with `[p]auditset category` (adminlog/memberlog defaults) or `[p]auditset event` (per-event overrides). Also adds `[p]audit overview`, a digest of recent modlog case activity from other cogs. Command usage, reactions, and voice-channel auditing are not implemented yet. Upgrading from the older `messagechannel`/`structurechannel` channels migrates them automatically on load.",
     "tags": [
         "moderation",
         "administration",
@@ -13,5 +13,5 @@
     "requirements": [],
     "min_bot_version": "3.5.0",
     "min_python_version": [3, 11, 0],
-    "end_user_data_statement": "This cog logs message content (on edit/delete), channel and role names/permissions, and the IDs of users involved, to channels the guild configures. It stores no persistent data of its own beyond that channel configuration."
+    "end_user_data_statement": "This cog logs message content (on edit/delete), channel and role names/permissions, member join/leave timestamps, and the IDs of users involved, to channels the guild configures. It stores no persistent data of its own beyond that channel configuration."
 }

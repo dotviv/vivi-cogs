@@ -9,6 +9,7 @@ loads and rewrites a whole guild group.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import sys
 import types
 from importlib import import_module
@@ -113,13 +114,14 @@ class FakeUser:
 class FakeGuild:
     id = 999
 
-    def __init__(self, *, owner_id: int = 0) -> None:
+    def __init__(self, *, owner_id: int = 0, member_count: int = 0) -> None:
         self.me = FakeUser(1, "ViviBot", bot=True)
         #: channel_id -> channel object, for tests exercising log-channel routing.
         self.channels: Dict[int, Any] = {}
         #: 0 by default -- distinct from any real test member's id, so nobody
         #: accidentally resolves as owner unless a test sets this explicitly.
         self.owner_id = owner_id
+        self.member_count = member_count
 
     def get_member(self, member_id: int):
         return None
@@ -129,9 +131,22 @@ class FakeGuild:
 
 
 class FakeMember(FakeUser):
-    def __init__(self, user_id: int, name: str, guild: FakeGuild, *, bot: bool = False) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        name: str,
+        guild: FakeGuild,
+        *,
+        bot: bool = False,
+        created_at=None,
+        joined_at=None,
+    ) -> None:
         super().__init__(user_id, name, bot=bot)
         self.guild = guild
+        #: Defaults are harmless placeholders -- only tests exercising join/leave
+        #: logging need to set these to something meaningful.
+        self.created_at = created_at or datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+        self.joined_at = joined_at
 
 
 class FakeChannel:

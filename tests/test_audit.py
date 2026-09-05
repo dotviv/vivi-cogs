@@ -702,5 +702,55 @@ class TestChannelCommands(AuditTestCase):
         self.assertIn("<#222>", fields["Event overrides"])
 
 
+class TestMemberJoinLeaveAuditing(AuditTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.member_channel = FakeAuditChannel(444)
+        self.add_channel(self.member_channel)
+        await set_category_channel(self.cog.config.guild(self.guild).log_channels, "memberlog", 444)
+
+    @staticmethod
+    def _fields(channel) -> dict:
+        embed = channel.sent[-1]["embed"]
+        return {field.name: field.value for field in embed.fields}
+
+    async def test_join_logs(self):
+        member = FakeMember(555, "newbie", self.guild)
+
+        await self.cog.on_member_join(member)
+
+        self.assertEqual(len(self.member_channel.sent), 1)
+        self.assertEqual(self.stored_cases, {})
+
+    async def test_join_without_configured_channel_is_not_logged(self):
+        self.cog.config.data.clear()
+        member = FakeMember(555, "newbie", self.guild)
+
+        await self.cog.on_member_join(member)
+
+        self.assertEqual(self.member_channel.sent, [])
+
+    async def test_remove_without_kick_entry_logs_no_actor(self):
+        member = FakeMember(555, "someone", self.guild)
+
+        await self.cog.on_member_remove(member)
+
+        self.assertEqual(len(self.member_channel.sent), 1)
+        self.assertNotIn("Actor:", self._fields(self.member_channel))
+        self.assertEqual(self.stored_cases, {})
+
+    async def test_remove_with_kick_entry_logs_actor(self):
+        member = FakeMember(555, "someone", self.guild)
+        kicker = FakeMember(333, "mod", self.guild)
+        self.bot.mod_ids.add(333)
+        self.set_audit_log_entries([FakeAuditLogEntry(target=types.SimpleNamespace(id=555), user=kicker)])
+
+        await self.cog.on_member_remove(member)
+
+        self.assertEqual(len(self.member_channel.sent), 1)
+        self.assertTrue(self._fields(self.member_channel)["Actor:"].endswith("🛡️"))
+        self.assertEqual(self.stored_cases, {})
+
+
 if __name__ == "__main__":
     unittest.main()
